@@ -1,5 +1,6 @@
 using Test
 using GateToolTest
+import Kaimon
 using GateToolTest:
     Tag,
     TaskItem,
@@ -192,6 +193,75 @@ println("NOISE: about to create model and tools")
         @test length(model.event_log) > 0
         @test any(contains("Added task"), model.event_log)
         @test any(contains("Moved task"), model.event_log)
+    end
+end
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# _dispatch_tool_call coercion tests
+# MCP JSON transport delivers all values as strings — verify the dispatch layer
+# coerces them to the declared types before calling the handler.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@testset "dispatch coercion" begin
+    # Simulate MCP JSON transport: all values arrive as strings.
+    # _dispatch_tool_call must coerce them to declared types before calling the handler.
+    dispatch = Kaimon.Gate._dispatch_tool_call
+
+    model = TodoBoardModel()
+    tools = create_tools(model)
+    tool_map = Dict(t.name => t.handler for t in tools)
+
+    @testset "positional Int + Enum (move_task)" begin
+        tool_map["add_task"]("Coerce test", "desc", high, Tag[])
+        result = dispatch(tool_map["move_task"],
+            Dict{String,Any}("task_id" => "1", "new_status" => "in_progress"))
+        @test occursin("Moved task #1", result)
+        @test model.tasks[1].status == in_progress
+    end
+
+    @testset "positional Int × 4 (get_screen)" begin
+        result = dispatch(tool_map["get_screen"],
+            Dict{String,Any}("x" => "1", "y" => "1", "width" => "80", "height" => "24"))
+        @test occursin("Screen capture", result)
+    end
+
+    @testset "all scalar types positional + kwargs (coerce_test)" begin
+        # All values sent as strings — covers Int, Float64, String, Enum, Bool, Symbol
+        # in both positional and kwarg positions (kwargs were broken before the fix)
+        result = dispatch(tool_map["coerce_test"],
+            Dict{String,Any}(
+                # positional
+                "id" => "7", "score" => "3.14", "name" => "widget",
+                "status" => "in_progress", "active" => "true", "sym" => "alpha",
+                # kwargs
+                "multiplier" => "3", "threshold" => "0.9", "tag" => "urgent",
+                "priority" => "high", "enabled" => "true", "key" => "beta",
+            ))
+        @test occursin("id=7", result)           # positional Int
+        @test occursin("score=3.14", result)     # positional Float64
+        @test occursin("name=widget", result)    # positional String
+        @test occursin("status=in_progress", result)  # positional Enum
+        @test occursin("active=true", result)    # positional Bool
+        @test occursin("sym=alpha", result)      # positional Symbol
+        @test occursin("multiplier=3", result)   # kwarg Int
+        @test occursin("threshold=0.9", result)  # kwarg Float64
+        @test occursin("tag=urgent", result)     # kwarg String
+        @test occursin("priority=high", result)  # kwarg Enum
+        @test occursin("enabled=true", result)   # kwarg Bool
+        @test occursin("key=beta", result)       # kwarg Symbol
+    end
+
+    @testset "kwargs defaults used when omitted" begin
+        result = dispatch(tool_map["coerce_test"],
+            Dict{String,Any}(
+                "id" => "1", "score" => "1.0", "name" => "x",
+                "status" => "todo", "active" => "false", "sym" => "x",
+            ))
+        @test occursin("multiplier=1", result)
+        @test occursin("threshold=0.5", result)
+        @test occursin("priority=low", result)
+        @test occursin("enabled=false", result)
+        @test occursin("key=default", result)
     end
 end
 
