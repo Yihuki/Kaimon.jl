@@ -201,12 +201,15 @@ macro mcp_tool(id, description, params, handler)
     # Extract the symbol from QuoteNode
     id_sym = id isa QuoteNode ? id.value : id.args[1]
     name_str = string(id_sym)
+    # Auto-generate human-readable title: "navigate_to_file" -> "Navigate To File"
+    title_str = join(titlecase.(split(name_str, "_")), " ")
 
     return esc(
         quote
             MCPTool(
                 $(QuoteNode(id_sym)),    # :exec_repl
                 $name_str,                # "exec_repl"
+                $title_str,               # "Exec Repl"
                 $description,
                 $params,
                 $handler,
@@ -1379,6 +1382,7 @@ function collect_tools()::Vector{MCPTool}
 
     return MCPTool[
         ping_tool,
+        server_log_tool,
         usage_instructions_tool,
         usage_quiz_tool,
         tool_help_tool,
