@@ -18,6 +18,7 @@ using LoggingExtras
 using Serialization
 using Preferences
 using ZMQ
+using CommonMark  # triggers Tachikoma's TachikomaMarkdownExt for markdown rendering
 using Printf
 using UUIDs
 using Tachikoma
