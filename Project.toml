@@ -1,6 +1,6 @@
 name = "Kaimon"
 uuid = "d3856c55-31fd-4246-b7e8-380411123c01"
-version = "1.0.0"
+version = "1.0.1"
 authors = ["Kahli Burke <kahli@kahliburke.com>"]
 
 [deps]
