@@ -17,6 +17,56 @@ mutable struct StressAgentResult
     message::String
 end
 
+"""
+Pre-defined stress test scenarios. Each entry maps a scenario name to a NamedTuple
+with `(description, tool, args_json, code)`. The `tool` field is the MCP tool name
+(use "ex" for the Julia eval path). The `code` field is used for the "ex" tool.
+"""
+const STRESS_SCENARIOS = [
+    (
+        name = "eval: sleep(1)",
+        description = "Eval path: concurrent sleep(1) via ex tool",
+        tool = "ex",
+        args_json = "{}",
+        code = "sleep(1); 42",
+    ),
+    (
+        name = "timed_op (5 steps)",
+        description = "Gate tool: run_timed_op with 5 progress messages",
+        tool = "run_timed_op",
+        args_json = """{"steps":5,"delay_ms":200}""",
+        code = "",
+    ),
+    (
+        name = "slow_task (3s)",
+        description = "Gate tool: slow_task — long-running, no progress output",
+        tool = "slow_task",
+        args_json = """{"duration_secs":3}""",
+        code = "",
+    ),
+    (
+        name = "analyze (3 passes)",
+        description = "Gate tool: analyze_board with multi-pass progress",
+        tool = "analyze_board",
+        args_json = """{"passes":3}""",
+        code = "",
+    ),
+    (
+        name = "burst stdout (2s)",
+        description = "Gate tool: run_noise_test — async stdout flood",
+        tool = "run_noise_test",
+        args_json = """{"duration_secs":2,"interval_ms":50}""",
+        code = "",
+    ),
+    (
+        name = "add_task (concurrent)",
+        description = "Gate tool: add_task — concurrent writes to shared state",
+        tool = "add_task",
+        args_json = """{"title":"stress-task","description":"ZMQ stress test","priority":"medium","tags":[]}""",
+        code = "",
+    ),
+]
+
 """Write the self-contained stress test script to a temp file. Returns the path."""
 function _write_stress_script()::String
     path = joinpath(tempdir(), "kaimon_stress_$(getpid()).jl")
@@ -27,13 +77,16 @@ end
 const _STRESS_SCRIPT_SOURCE = """
 using HTTP, JSON, Dates
 
-# ── Args: port session code --stress N --stagger S --timeout T ──
+# ── Args: port session code num_agents stagger timeout [tool_name [tool_args_json]] ──
 port = parse(Int, ARGS[1])
 session = ARGS[2]
 code = ARGS[3]
 num_agents = parse(Int, ARGS[4])
 stagger = parse(Float64, ARGS[5])
 timeout = parse(Int, ARGS[6])
+# Optional: gate tool override
+tool_name = length(ARGS) >= 7 ? ARGS[7] : "ex"
+tool_args_json = length(ARGS) >= 8 ? ARGS[8] : "{}"
 
 BASE_URL = "http://localhost:\$(port)/mcp"
 
@@ -84,20 +137,35 @@ function mcp_initialize(agent_id::Int)
 end
 
 function call_tool(session_id::String, agent_id::Int)
+    # Build tool arguments based on tool_name
+    tool_arguments = if tool_name == "ex"
+        Dict("e" => code, "q" => false, "ses" => session)
+    else
+        try
+            JSON.parse(tool_args_json)
+        catch
+            Dict{String,Any}()
+        end
+    end
     body = JSON.json(Dict(
         "jsonrpc" => "2.0", "id" => 2, "method" => "tools/call",
         "params" => Dict(
-            "name" => "ex",
-            "arguments" => Dict("e" => code, "q" => false, "ses" => session),
+            "name" => tool_name,
+            "arguments" => tool_arguments,
         ),
     ))
     event_count = 0
     progress_count = 0
     t0 = time()
     ok = false
+    # HTTP.jl readtimeout is a TOTAL connection lifetime, not per-read.
+    # Set it generously: user timeout + 60s grace for result delivery.
+    # Dead-connection detection relies on the server's heartbeat (every 5s)
+    # and TCP keepalive rather than readtimeout.
+    read_timeout = timeout + 60
     try
         HTTP.open("POST", BASE_URL, make_headers(; session_id);
-                  status_exception=false, readtimeout=timeout) do io
+                  status_exception=false, readtimeout=read_timeout) do io
             write(io, body)
             HTTP.closewrite(io)
             resp = HTTP.startread(io)
@@ -114,8 +182,18 @@ function call_tool(session_id::String, agent_id::Int)
                 println("RESULT agent=\$(agent_id) elapsed=\$(round(time()-t0,digits=2)) events=1 progress=0 ok=true")
                 return
             end
-            while !eof(io)
-                line = try String(readline(io)) catch e; e isa EOFError ? break : rethrow(); end
+            # Wrap in IOBuffer to avoid HTTP.jl's byte-at-a-time warning
+            bio = Base.BufferStream()
+            reader = @async try
+                while !eof(io)
+                    chunk = readavailable(io)
+                    isempty(chunk) || write(bio, chunk)
+                end
+            finally
+                close(bio)
+            end
+            while !eof(bio)
+                line = try String(readline(bio)) catch e; e isa EOFError ? break : rethrow(); end
                 startswith(line, "data: ") || continue
                 data_str = line[7:end]
                 event_count += 1
@@ -156,7 +234,7 @@ function call_tool(session_id::String, agent_id::Int)
 end
 
 # ── Main ──
-println("START agents=\$(num_agents) stagger=\$(stagger) timeout=\$(timeout)")
+println("START agents=\$(num_agents) stagger=\$(stagger) timeout=\$(timeout) tool=\$(tool_name)")
 
 # Phase 1: Initialize
 sessions = Pair{Int,String}[]
@@ -312,12 +390,19 @@ function _format_stress_summary(
     stagger::Float64,
     timeout::Int,
     total_wall_time::Float64,
-    result_file::Union{String,Nothing},
+    result_file::Union{String,Nothing};
+    tool_name::String = "ex",
+    tool_args_json::String = "{}",
 )::String
     buf = IOBuffer()
     println(buf, "Stress Test Results")
     println(buf, "===================")
-    println(buf, "Code: $code")
+    if tool_name == "ex"
+        println(buf, "Code: $code")
+    else
+        println(buf, "Tool: $tool_name")
+        tool_args_json != "{}" && println(buf, "Args: $tool_args_json")
+    end
     println(buf, "Agents: $n_agents | Stagger: $(stagger)s | Timeout: $(timeout)s")
     println(buf, "Session: $sess_key")
     println(buf)

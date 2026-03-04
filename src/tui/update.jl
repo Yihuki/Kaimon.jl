@@ -54,6 +54,13 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
         end
         7 => begin
             handle_resize!(m.advanced_layout, evt)
+            if Base.contains(m._stress_horde_area, evt.x, evt.y)
+                if evt.button == mouse_scroll_up
+                    m.stress_horde_scroll = max(0, m.stress_horde_scroll - 1)
+                elseif evt.button == mouse_scroll_down
+                    m.stress_horde_scroll += 1
+                end
+            end
             m.stress_scroll_pane !== nothing && handle_mouse!(m.stress_scroll_pane, evt)
         end
         _ => nothing
@@ -205,6 +212,12 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
         return
     end
 
+    # When a stress modal is open, capture all input
+    if m.active_tab == 7 && m.stress_modal != :none
+        _handle_stress_modal_key!(m, evt)
+        return
+    end
+
     # When a stress test form field is in edit mode, capture all input
     if m.active_tab == 7 && m.stress_editing
         _handle_stress_field_edit!(m, evt)
@@ -305,7 +318,16 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
             # spurious KeyEvent(:escape) events within the first second.
             time() - m.start_time < 1.0 && return
             @match tab begin
-                7 => (m.stress_state == STRESS_RUNNING && _cancel_stress_test!(m); return)
+                7 => begin
+                    if m.stress_modal != :none
+                        m.stress_modal = :none
+                    elseif m.stress_state == STRESS_RUNNING
+                        _cancel_stress_test!(m)
+                    else
+                        m.shutting_down = true
+                    end
+                    return
+                end
                 5 => (_handle_tests_escape!(m); return)
                 4 => begin
                     if m.search_query_editing
@@ -477,8 +499,11 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
 
         (7, 1) => @match evt.key begin
             :up => (m.stress_field_idx = max(1, m.stress_field_idx - 1))
-            :down => (m.stress_field_idx = min(6, m.stress_field_idx + 1))
+            :down => (m.stress_field_idx = min(8, m.stress_field_idx + 1))
             :enter => _handle_stress_enter!(m)
+            # PageUp/PageDown scroll the horde/log without leaving the form
+            :pageup => (m.stress_horde_scroll = max(0, m.stress_horde_scroll - 5))
+            :pagedown => (m.stress_horde_scroll += 5)
             _ => nothing
         end
         (7, 2) => begin

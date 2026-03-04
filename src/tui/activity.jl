@@ -453,10 +453,14 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
             border_style = _pane_border(m, 3, 2),
             title_style = _pane_title(m, 3, 2),
         )
+        # Preserve scroll offset from previous frame's paragraph
+        if m.detail_paragraph !== nothing && m._detail_for_result == -2
+            p.scroll_offset = m.detail_paragraph.scroll_offset
+        end
         render(p, panes[2], buf)
-        # Don't cache the paragraph — it changes every frame
-        m.detail_paragraph = nothing
-        m._detail_for_result = -1
+        # Cache so the detail pane is scrollable via handle_key!
+        m.detail_paragraph = p
+        m._detail_for_result = -2  # sentinel: in-flight (rebuilt every frame)
     else
         r = m.tool_results[m.selected_result]
 

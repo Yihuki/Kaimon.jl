@@ -196,8 +196,9 @@ end
     # Tab 1: 1=status, 2=log | Tab 2: 1=gates, 2=agents, 3=detail
     # Tab 3: 1=list, 2=detail | Tab 4: 1=server, 2=actions, 3=clients
     # Tab 5: 1=form, 2=output | Tab 6: 1=runs list, 2=results
+    # Tab 7: 1=form, 2=horde, 3=output
     focused_pane::Dict{Int,Int} =
-        Dict(1 => 2, 2 => 1, 3 => 1, 4 => 1, 5 => 1, 6 => 1, 7 => 2)
+        Dict(1 => 2, 2 => 1, 3 => 1, 4 => 1, 5 => 1, 6 => 1, 7 => 1)
 
     # ── Tests tab (tab 6) ──
     test_runs::Vector{TestRun} = TestRun[]
@@ -218,20 +219,30 @@ end
     # ── Advanced tab (stress test) ──
     stress_state::StressState = STRESS_IDLE
     stress_code::String = "sleep(3); 42"
+    stress_tool::String = ""            # MCP tool name; empty = "ex" (eval path)
+    stress_tool_args::String = "{}"     # JSON args for gate tool (used when stress_tool != "ex")
+    stress_scenario_idx::Int = 0        # 0 = custom, 1..N = STRESS_SCENARIOS preset
     stress_agents::String = "5"
     stress_stagger::String = "0.0"
     stress_timeout::String = "30"
     stress_session_idx::Int = 1         # selected session index
-    stress_field_idx::Int = 1           # which form field has focus (1-6, 6=Run)
+    stress_field_idx::Int = 1           # which form field has focus (1-8, 8=Run)
     stress_editing::Bool = false        # true when a form field is in edit mode
     stress_code_area::Any = nothing     # TextArea widget, created on demand
+    stress_modal::Symbol = :none        # :none, :scenario, :session, :tool
+    stress_modal_sel::Int = 1           # highlighted item in list modals
+    stress_modal_scroll::Int = 0        # scroll offset in list modals
+    stress_modal_tool_field::Int = 1    # 1=name, 2=args (within tool modal)
+    stress_tool_name_input::Any = nothing   # TextInput for tool modal name field
+    stress_tool_args_input::Any = nothing   # TextInput for tool modal args field
     stress_output::Vector{String} = String[]
     stress_output_lock::ReentrantLock = ReentrantLock()
     stress_scroll_pane::Union{ScrollPane,Nothing} = nothing
     stress_horde_scroll::Int = 0        # vertical scroll offset for agent horde
+    _stress_horde_area::Rect = Rect()   # cached for mouse scroll hit-testing
     stress_process::Any = nothing       # process handle for kill
     stress_result_file::String = ""     # path to written results
-    advanced_layout::ResizableLayout = ResizableLayout(Vertical, [Fixed(14), Fill()])
+    advanced_layout::ResizableLayout = ResizableLayout(Vertical, [Fixed(16), Fill()])
 
     # ── Search tab (tab 7) ──
     search_layout::ResizableLayout =
