@@ -123,6 +123,11 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
         m._last_reap_time = time()
     end
 
+    # Monitor managed extensions (check health, auto-restart crashed ones)
+    if !m._render_mode && m.tick % 30 == 0  # ~1 Hz at 30 fps
+        _monitor_extensions!(m.conn_mgr)
+    end
+
     # Deferred server start — kick off on first frame so the TUI is already
     # rendering and can report startup status in the Server tab.
     if !m.server_started && !m._render_mode
@@ -241,14 +246,15 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
         [Span("4", tstyle(:warning)), Span(" Search", tstyle(:text))],
         [Span("5", tstyle(:warning)), Span(" Tests", tstyle(:text))],
         [Span("6", tstyle(:warning)), Span(" Config", tstyle(:text))],
-        [Span("7", tstyle(:warning)), Span(" Advanced", tstyle(:text))],
         [
-            Span("8", tstyle(:warning)),
+            Span("7", tstyle(:warning)),
             Span(
                 " Debug",
                 m.debug_state == :paused ? tstyle(:error, bold = true) : tstyle(:text),
             ),
         ],
+        [Span("8", tstyle(:warning)), Span(" Advanced", tstyle(:text))],
+        [Span("9", tstyle(:warning)), Span(" Extensions", tstyle(:text))],
     ]
 
     # Compute visible tab window that fits in tab_area and includes the active tab.
@@ -338,8 +344,9 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
             view_tests(m, content_area, buf)
         end
         6 => view_config(m, content_area, buf)
-        7 => view_advanced(m, content_area, buf)
-        8 => Base.invokelatest(view_debug, m, content_area, buf)
+        7 => Base.invokelatest(view_debug, m, content_area, buf)
+        8 => view_advanced(m, content_area, buf)
+        9 => view_extensions(m, content_area, buf)
         _ => nothing
     end
 

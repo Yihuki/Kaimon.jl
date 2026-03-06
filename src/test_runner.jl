@@ -167,55 +167,19 @@ exit_code = 0
 try
     cd(project_path)
 
-    # Check for ReTest
-    has_retest = false
-    for toml_path in [test_project, joinpath(project_path, "Project.toml")]
-        isfile(toml_path) || continue
-        try
-            toml = TOML.parsefile(toml_path)
-            for key in ("deps", "extras")
-                haskey(get(toml, key, Dict()), "ReTest") && (has_retest = true)
-            end
-        catch
-        end
+    # Delegate execution to the project's official test entrypoint, but
+    # sanitize ARGS so runtests.jl sees only the intended test filter.
+    old_args = copy(ARGS)
+    empty!(ARGS)
+    if !isempty(pattern)
+        push!(ARGS, pattern)
     end
 
-    # Run standard tests
-    include(runtests_path)
-
-    # If project has ReTest, discover and run ReTest suites
-    if has_retest
-        @eval using ReTest
-
-        retest_files = String[]
-        test_dir = joinpath(project_path, "test")
-        for f in readdir(test_dir)
-            endswith(f, ".jl") || continue
-            f == "runtests.jl" && continue
-            fpath = joinpath(test_dir, f)
-            try
-                content = read(fpath, String)
-                if occursin("using ReTest", content)
-                    push!(retest_files, fpath)
-                end
-            catch
-            end
-        end
-
-        if !isempty(retest_files)
-            println("TEST_RUNNER: RETEST_SUITES found=\$(length(retest_files))")
-            flush(stdout)
-            for fpath in retest_files
-                println("TEST_RUNNER: RETEST_INCLUDE file=\$(basename(fpath))")
-                flush(stdout)
-                include(fpath)
-            end
-            if !isempty(pattern)
-                @eval retest(r"\$(pattern)", verbose=\$(verbose_level))
-            else
-                @eval retest(verbose=\$(verbose_level))
-            end
-        end
+    try
+        include(runtests_path)
+    finally
+        empty!(ARGS)
+        append!(ARGS, old_args)
     end
 
     println("TEST_RUNNER: DONE status=passed")
@@ -325,6 +289,7 @@ function spawn_test_run(
                     push!(run.raw_output, "ERROR: $(sprint(showerror, e))")
                 end
             finally
+                run.reader_done = true
                 _push_test_update!(:done, run)
                 # Persist to database
                 _persist_test_run!(run)
@@ -338,6 +303,7 @@ function spawn_test_run(
             run.raw_output,
             "ERROR: Failed to spawn test process: $(sprint(showerror, e))",
         )
+        run.reader_done = true
         _push_test_update!(:done, run)
     end
 

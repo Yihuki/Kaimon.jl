@@ -204,6 +204,9 @@ function Tachikoma.init!(m::KaimonModel, _t::Tachikoma.Terminal)
     # rendering and can report status in the Server tab.
 
     m.start_time = time()
+
+    # Start managed extensions (spawns subprocesses for auto_start extensions)
+    start_extensions!()
 end
 
 function Tachikoma.cleanup!(m::KaimonModel)
@@ -212,6 +215,9 @@ function Tachikoma.cleanup!(m::KaimonModel)
 
     # Skip teardown on restart — we're coming right back
     m._restart_requested && return
+
+    # Stop managed extensions before disconnecting gates
+    stop_all_extensions!()
 
     # Disable gate mode
     GATE_MODE[] = false

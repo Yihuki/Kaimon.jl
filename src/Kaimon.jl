@@ -61,6 +61,8 @@ include("Generate.jl")
 include("gate_prefs.jl")
 include("gate.jl")
 include("gate_client.jl")
+include("extensions.jl")
+include("extension_manager.jl")
 include("stress_test.jl")
 include("test_output_parser.jl")
 include("test_runner.jl")
@@ -1248,6 +1250,16 @@ function execute_via_gate_streaming(
 )
     conn, err = _resolve_gate_conn(session)
     err !== nothing && return err
+
+    # Warn agent if session is paused at a breakpoint — eval will block or fail
+    if conn.debug_paused
+        dname = isempty(conn.display_name) ? conn.name : conn.display_name
+        return "⏸ Session '$dname' is paused at an @infiltrate breakpoint. " *
+               "The REPL cannot evaluate new code while paused.\n\n" *
+               "Use debug_ctrl(action=\"status\") to see where it's paused, " *
+               "debug_eval(expression=\"...\") to evaluate in the breakpoint scope, " *
+               "or debug_ctrl(action=\"continue\") to resume execution first."
+    end
 
     cleaned_code, show_return_value, was_stripped = _prepare_gate_code(code, quiet)
 

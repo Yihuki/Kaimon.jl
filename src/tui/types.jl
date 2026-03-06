@@ -198,9 +198,9 @@ end
     # Tab 1: 1=status, 2=log | Tab 2: 1=gates, 2=agents, 3=detail
     # Tab 3: 1=list, 2=detail | Tab 4: 1=server, 2=actions, 3=clients
     # Tab 5: 1=form, 2=output | Tab 6: 1=runs list, 2=results
-    # Tab 7: 1=form, 2=horde, 3=output
+    # Tab 7: 1=form, 2=horde, 3=output | Tab 9: 1=list, 2=detail
     focused_pane::Dict{Int,Int} =
-        Dict(1 => 2, 2 => 1, 3 => 1, 4 => 1, 5 => 1, 6 => 1, 7 => 1, 8 => 2)
+        Dict(1 => 2, 2 => 1, 3 => 1, 4 => 1, 5 => 1, 6 => 1, 7 => 2, 8 => 1, 9 => 1)
 
     # ── Tests tab (tab 6) ──
     test_runs::Vector{TestRun} = TestRun[]
@@ -321,7 +321,7 @@ end
         extensions::Vector{String},
     } = (type = "", dirs = String[], extensions = String[])
 
-    # ── Debug tab (tab 8) ──
+    # ── Debug tab (tab 7) ──
     debug_state::Symbol = :idle           # :idle, :paused
     debug_session_key::String = ""        # which gate session is paused
     debug_file::String = ""
@@ -344,6 +344,11 @@ end
     _debug_locals_synced::Int = 0         # for incremental pane sync
     _debug_history_synced::Int = 0
 
+    # ── Extensions tab (tab 9) ──
+    ext_selected::Int = 1                 # selected extension in list
+    ext_detail_scroll::Int = 0            # scroll offset in detail pane
+    extensions_layout::ResizableLayout = ResizableLayout(Horizontal, [Percent(40), Fill()])
+
     # ── Code staleness (Revise reload) ──
     _code_stale::Bool = false
     _code_last_check::Float64 = 0.0
@@ -353,8 +358,8 @@ end
 end
 
 # Number of focusable panes per tab
-# Tab order: 1=Server 2=Sessions 3=Activity 4=Search 5=Tests 6=Config 7=Advanced
-const _PANE_COUNTS = Dict(1 => 2, 2 => 3, 3 => 2, 4 => 3, 5 => 2, 6 => 3, 7 => 3, 8 => 2)
+# Tab order: 1=Server 2=Sessions 3=Activity 4=Search 5=Tests 6=Config 7=Debug 8=Advanced 9=Extensions
+const _PANE_COUNTS = Dict(1 => 2, 2 => 3, 3 => 2, 4 => 3, 5 => 2, 6 => 3, 7 => 2, 8 => 3, 9 => 2)
 
 """Return the border style for a pane — highlighted if focused."""
 function _pane_border(m::KaimonModel, tab::Int, pane::Int)

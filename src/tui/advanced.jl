@@ -402,7 +402,7 @@ end
 """Handle Enter on the Advanced tab — open field for editing or run."""
 function _handle_stress_enter!(m::KaimonModel)
     m.stress_state == STRESS_RUNNING && return
-    get(m.focused_pane, 7, 1) == 1 || return
+    get(m.focused_pane, 8, 1) == 1 || return
 
     @match m.stress_field_idx begin
         1 => begin

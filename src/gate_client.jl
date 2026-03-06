@@ -40,6 +40,7 @@ mutable struct REPLConnection
     allow_restart::Bool          # Whether this session allows manage_repl restart
     allow_mirror::Bool           # Whether mirroring is allowed for this session
     mirror_repl::Bool            # Whether REPL mirroring is currently active
+    debug_paused::Bool           # True when session is paused at an @infiltrate breakpoint
 end
 
 function REPLConnection(;
@@ -86,6 +87,7 @@ function REPLConnection(;
         true,  # allow_restart — updated from pong
         true,  # allow_mirror — updated from pong
         false, # mirror_repl — updated from pong
+        false, # debug_paused
     )
 end
 
@@ -979,6 +981,13 @@ function drain_stream_messages!(mgr::ConnectionManager)
                             # Channel full or closed
                         end
                     end
+                end
+
+                # Track debug paused state on the connection for fast checks
+                if ch == "breakpoint_hit"
+                    conn.debug_paused = true
+                elseif ch == "breakpoint_resumed"
+                    conn.debug_paused = false
                 end
 
                 if !routed

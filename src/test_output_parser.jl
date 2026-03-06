@@ -34,6 +34,7 @@ mutable struct TestRun
     project_path::String
     started_at::DateTime
     finished_at::Union{DateTime,Nothing}
+    reader_done::Bool
     status::TestRunStatus
     pattern::String
     results::Vector{TestResult}
@@ -53,6 +54,7 @@ function TestRun(; id::Int = 0, project_path::String = "", pattern::String = "")
         project_path,
         now(),
         nothing,
+        false,
         RUN_RUNNING,
         pattern,
         TestResult[],
