@@ -1,10 +1,12 @@
 module GateToolTest
 
 using Tachikoma
+using Infiltrator
 using Kaimon.Gate: GateTool, serve, progress, tty_path, tty_size, restore_tty!
 
 include("types.jl")
 include("tools.jl")
+include("debug_scenarios.jl")
 include("tui.jl")
 
 """
@@ -32,6 +34,6 @@ function run()
     end
 end
 
-export run, TodoBoardModel, create_tools
+export run, TodoBoardModel, create_tools, debug_fibonacci, debug_data_pipeline, debug_matrix_solver
 
 end # module GateToolTest

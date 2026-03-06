@@ -83,9 +83,11 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
                 status = msg.channel == "eval_complete" ? "completed" : "error"
                 _push_log!(:info, "Gate eval $status ($(msg.session_name))")
             elseif msg.channel == "breakpoint_hit"
-                _handle_breakpoint_hit!(m, msg)
+                Base.invokelatest(_handle_breakpoint_hit!, m, msg)
             elseif msg.channel == "breakpoint_resumed"
-                _handle_breakpoint_resumed!(m)
+                Base.invokelatest(_handle_breakpoint_resumed!, m)
+            elseif msg.channel == "debug_eval"
+                Base.invokelatest(_handle_debug_eval_pub!, m, msg)
             else
                 kind = msg.channel == "stderr" ? :stderr : :stdout
                 push!(
@@ -98,6 +100,9 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
             popfirst!(m.activity_feed)
         end
         _process_pending_reindexes!(m)
+
+        # Poll for agent debug continue/abort consent requests
+        Base.invokelatest(_poll_debug_consent!, m)
 
         # Auto-index gate projects on first connect
         for conn in connected_sessions(m.conn_mgr)
@@ -165,7 +170,7 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
     # Kanji style reflects system state — breathes when active, red on errors.
     n_conns_k = m.conn_mgr !== nothing ? length(connected_sessions(m.conn_mgr)) : 0
     has_inflight = !isempty(m.inflight_calls)
-    has_error = m._code_stale || m.debug_state == :paused
+    has_error = m.debug_state == :paused
     kanji_style = if has_error
         Style(
             fg = color_lerp(
@@ -197,10 +202,23 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
         tstyle(:title, bold = true)
     end
 
+    title_style = if m._code_stale
+        Style(
+            fg = color_lerp(
+                ColorRGB(0x99, 0x44, 0xdd),  # deep purple
+                ColorRGB(0xcc, 0x77, 0xff),  # light purple
+                breathe(m.tick; period = 45),
+            ),
+            bold = true,
+        )
+    else
+        tstyle(:title, bold = true)
+    end
+
     outer = Block(
         title = "Kaimon",
         border_style = tstyle(:border),
-        title_style = tstyle(:title, bold = true),
+        title_style = title_style,
         title_right = "開門",
         title_right_style = kanji_style,
         title_padding = 2,
@@ -321,7 +339,7 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
         end
         6 => view_config(m, content_area, buf)
         7 => view_advanced(m, content_area, buf)
-        8 => view_debug(m, content_area, buf)
+        8 => Base.invokelatest(view_debug, m, content_area, buf)
         _ => nothing
     end
 
@@ -358,17 +376,6 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
                 Span("$(n_agents) agents", tstyle(:secondary)),
             ],
             right = [
-                m._code_stale ?
-                Span(
-                    "● ",
-                    Style(
-                        fg = color_lerp(
-                            ColorRGB(0xff, 0xaa, 0x00),  # orange
-                            ColorRGB(0xff, 0xdd, 0x00),  # yellow
-                            breathe(m.tick; period = 45),
-                        ),
-                    ),
-                ) : Span(""),
                 Span("⏱ $(uptime) ", tstyle(:text_dim)),
                 Span(" tab:focus [q]uit ", tstyle(:text_dim)),
             ],
@@ -376,6 +383,21 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
         status_area,
         buf,
     )
+
+    # Quit confirmation modal
+    if m.quit_confirm
+        if m.quit_confirm_modal === nothing
+            m.quit_confirm_modal = Modal(
+                title = "Quit Kaimon?",
+                message = "This will stop the MCP server\nand disconnect all sessions.",
+                confirm_label = "Quit",
+                cancel_label = "Cancel",
+                selected = :confirm,
+            )
+        end
+        m.quit_confirm_modal.tick = m.tick
+        render(m.quit_confirm_modal, f.area, buf)
+    end
 end
 
 # ── Server Tab ────────────────────────────────────────────────────────────────

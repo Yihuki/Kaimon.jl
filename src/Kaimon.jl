@@ -1106,6 +1106,13 @@ end
 const GATE_MODE = Ref{Bool}(false)
 const GATE_CONN_MGR = Ref{Union{Nothing,ConnectionManager}}(nothing)
 
+# ── Debug consent coordination ────────────────────────────────────────────
+# MCP tool writes a request, TUI reads it and shows consent prompt.
+# Response channel carries :approved or :denied back to the MCP tool.
+
+const _DEBUG_CONTINUE_REQUEST = Ref{Any}(nothing)   # (session_key::String, action::Symbol)
+const _DEBUG_CONTINUE_RESPONSE = Ref{Any}(nothing)   # Channel{Symbol} — :approved or :denied
+
 """
     _resolve_gate_conn(session) -> (conn, error_string)
 
@@ -1139,6 +1146,19 @@ function _resolve_gate_conn(session::String)
         end
         return (nothing, "ERROR: No session matched '$(session)'. Available: $available")
     end
+
+    # Stalled sessions: return a status message instead of letting tools timeout
+    if conn.status == :stalled
+        ago = round(Int, Dates.value(now() - conn.last_seen) / 1000)
+        dname = isempty(conn.display_name) ? conn.name : conn.display_name
+        return (
+            nothing,
+            "Session '$dname' ($(short_key(conn))) is stalled — last seen $(ago)s ago. " *
+            "It may be performing a long-running task (compilation, GC, etc). " *
+            "Try again shortly or use manage_repl to restart it.",
+        )
+    end
+
     return (conn, nothing)
 end
 
@@ -1217,8 +1237,6 @@ end
 Execute code on a remote REPL via the gate client using async eval with streaming output.
 The `on_progress` callback receives `(message::String)` for each output chunk, enabling
 upstream callers (e.g. SSE progress notifications) to forward incremental output.
-
-Falls back to synchronous `eval_remote` if the gate doesn't support `:eval_async`.
 """
 function execute_via_gate_streaming(
     code::String;
@@ -1247,14 +1265,6 @@ function execute_via_gate_streaming(
 
     response =
         eval_remote_async(conn, cleaned_code; display_code = code, on_output = on_output)
-
-    # Fallback: if gate doesn't support :eval_async (old gate version),
-    # the error will mention "unknown request type". Retry with sync eval_remote.
-    if hasproperty(response, :exception) &&
-       response.exception !== nothing &&
-       contains(string(response.exception), "unknown request type")
-        response = eval_remote(conn, cleaned_code; display_code = code)
-    end
 
     return _format_gate_response(
         response,
@@ -1403,15 +1413,11 @@ function collect_tools()::Vector{MCPTool}
         format_tool,
         lint_tool,
         navigate_to_file_tool,
-        open_and_breakpoint_tool,
-        start_debug_session_tool,
-        add_watch_expression_tool,
-        copy_debug_value_tool,
-        debug_step_over_tool,
-        debug_step_into_tool,
-        debug_step_out_tool,
-        debug_continue_tool,
-        debug_stop_tool,
+        debug_exfiltrate_tool,
+        debug_inspect_safehouse_tool,
+        debug_clear_safehouse_tool,
+        debug_ctrl_tool,
+        debug_eval_tool,
         pkg_add_tool,
         pkg_rm_tool,
         run_tests_tool,

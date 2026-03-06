@@ -81,6 +81,9 @@ function _open_search_manage!(m::KaimonModel)
     m.search_manage_entries = entries
     m.search_manage_col_info = Dict{String,Dict}()
     m.search_manage_stale = Dict{String,Int}()
+    m.search_manage_pane = nothing
+    m._search_manage_pane_synced = 0
+    m._search_manage_pane_sel = 0
 
     # Fire async task to gather Qdrant info + stale counts for all entries
     entry_data = [(e.collection, e.project_path) for e in entries if !isempty(e.collection)]

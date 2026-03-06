@@ -412,7 +412,7 @@ function _collect_session_collections(m::KaimonModel)
             copy(m.conn_mgr.connections)
         end
         for conn in conns
-            conn.status == :connected || continue
+            conn.status in (:connected, :evaluating) || continue
             isempty(conn.project_path) && continue
             col = get_project_collection_name(conn.project_path)
             if col in existing && !any(p -> p.second == col, pairs)
@@ -436,7 +436,7 @@ function _resolve_project_for_collection(m::KaimonModel, col_name::String)
             copy(m.conn_mgr.connections)
         end
         for conn in conns
-            conn.status == :connected || continue
+            conn.status in (:connected, :evaluating) || continue
             isempty(conn.project_path) && continue
             if get_project_collection_name(conn.project_path) == col_name
                 return conn.project_path

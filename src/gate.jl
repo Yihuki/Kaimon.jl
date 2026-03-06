@@ -54,6 +54,121 @@ const _GATE_TTY_PARKED_PGRP = Ref{Union{Int32,Nothing}}(nothing)
 # and defeating the 0.3 s grace period for the ZMQ reply to flush.
 const _RESTARTING = Ref{Bool}(false)
 
+# ── Debug Breakpoint State ───────────────────────────────────────────────────
+# Programmatic breakpoint system for agent-assisted debugging.
+# _breakpoint_hook() blocks the calling thread and communicates with the
+# gate's message loop via Channels, allowing agents to inspect locals and
+# eval expressions in the paused context.
+
+const _DEBUG_PAUSED = Ref{Any}(nothing)        # NamedTuple with pause info, or nothing
+const _DEBUG_RESUME_CH = Ref{Any}(nothing)      # Channel{Symbol} — :continue
+const _DEBUG_EVAL_CH = Ref{Any}(nothing)        # Channel{Pair{String, Channel{Any}}}
+const _INFILTRATOR_HOOKED = Ref(false)          # true once _install_infiltrator_hook! succeeds
+
+"""
+    _breakpoint_hook(locals::Dict{Symbol,Any}; file="unknown", line=0)
+
+Programmatic breakpoint for agent-assisted debugging. Pauses execution,
+publishes breakpoint info via the PUB socket, and blocks until an agent
+sends a continue command via the debug protocol.
+
+Insert into code as:
+    Kaimon.Gate._breakpoint_hook(Base.@locals; file=@__FILE__, line=@__LINE__)
+"""
+function _breakpoint_hook(locals::Dict{Symbol,Any}; file::String = "unknown", line::Int = 0)
+    # Keep Infiltrator's async check disabled so subsequent @infiltrate calls work
+    Infiltrator = _find_infiltrator()
+    if Infiltrator !== nothing
+        isdefined(Infiltrator, :toggle_async_check) && Infiltrator.toggle_async_check(false)
+        isdefined(Infiltrator, :clear_disabled!) && Infiltrator.clear_disabled!()
+    end
+
+    info = (
+        file = file,
+        line = line,
+        locals = Dict(string(k) => sprint(show, MIME"text/plain"(), v; context = :limit => true) for (k, v) in locals),
+        locals_types = Dict(string(k) => string(typeof(v)) for (k, v) in locals),
+    )
+    _publish_stream("breakpoint_hit", _serialize_result(info))
+
+    resume_ch = Channel{Symbol}(1)
+    eval_ch = Channel{Pair{String,Channel{Any}}}(32)
+    _DEBUG_PAUSED[] = info
+    _DEBUG_RESUME_CH[] = resume_ch
+    _DEBUG_EVAL_CH[] = eval_ch
+
+    # Process eval requests while paused — single persistent module so
+    # assignments survive across evals and Infiltrator macros are available.
+    eval_mod = Module()
+    for (k, v) in locals
+        Core.eval(eval_mod, Expr(:(=), k, QuoteNode(v)))
+    end
+    # Import Infiltrator exports (@exfiltrate etc.) if available
+    try
+        Core.eval(eval_mod, :(using Infiltrator))
+    catch; end
+    @async begin
+        for (code, result_ch) in eval_ch
+            try
+                val = Base.invokelatest(Core.eval, eval_mod, Meta.parse(code))
+                put!(result_ch, sprint(show, MIME"text/plain"(), val; context = :limit => true))
+            catch e
+                put!(result_ch, "ERROR: " * sprint(showerror, e))
+            end
+        end
+    end
+
+    take!(resume_ch)
+    close(eval_ch)
+    _DEBUG_PAUSED[] = nothing
+    _DEBUG_RESUME_CH[] = nothing
+    _DEBUG_EVAL_CH[] = nothing
+    _publish_stream("breakpoint_resumed", "")
+    return nothing
+end
+
+"""
+    _install_infiltrator_hook!()
+
+Override `Infiltrator.start_prompt` so that `@infiltrate` routes through the
+gate's breakpoint system instead of opening an interactive REPL prompt.
+Called automatically when `Infiltrator` is detected during `serve()`.
+
+This also disables Infiltrator's async-context check (which would block
+`@infiltrate` inside gate evals that run on spawned threads).
+"""
+function _find_infiltrator()
+    for (pkgid, mod) in Base.loaded_modules
+        pkgid.name == "Infiltrator" && return mod
+    end
+    return nothing
+end
+
+function _install_infiltrator_hook!()
+    Infiltrator = _find_infiltrator()
+    Infiltrator === nothing && error("Infiltrator not loaded")
+    # Disable the async check — gate evals run on spawned threads
+    if isdefined(Infiltrator, :toggle_async_check)
+        Infiltrator.toggle_async_check(false)
+    elseif isdefined(Infiltrator, :CHECK_TASK)
+        Infiltrator.CHECK_TASK[] = false
+    end
+    # Clear any previously disabled infiltration points (from before hook install)
+    if isdefined(Infiltrator, :clear_disabled!)
+        Infiltrator.clear_disabled!()
+    end
+    # Override start_prompt to route through our breakpoint system
+    @eval function ($Infiltrator).start_prompt(
+        mod, locals::Dict{Symbol,Any}, file, fileline, ex = nothing, bt = nothing;
+        terminal = nothing, repl = nothing, nostack = false,
+    )
+        Gate._breakpoint_hook(locals; file = string(file), line = Int(fileline))
+    end
+    _INFILTRATOR_HOOKED[] = true
+    @info "Infiltrator.jl integration active — @infiltrate routes through gate debug protocol"
+end
+
+
 # ── Session-Scoped Tools ──────────────────────────────────────────────────────
 
 """
@@ -1328,6 +1443,35 @@ function handle_message(request::NamedTuple)
         end
 
         return (type = :ok, message = "restarting via exec")
+    # ── Debug Protocol ──────────────────────────────────────────────────────
+    elseif msg_type == :debug_status
+        paused = _DEBUG_PAUSED[]
+        if paused !== nothing
+            return (type = :debug_status, is_paused = true, paused...)
+        else
+            return (type = :debug_status, is_paused = false)
+        end
+
+    elseif msg_type == :debug_eval
+        eval_ch = _DEBUG_EVAL_CH[]
+        eval_ch === nothing &&
+            return (type = :error, message = "Not paused at a breakpoint")
+        code = string(get(request, :code, ""))
+        result_ch = Channel{Any}(1)
+        put!(eval_ch, code => result_ch)
+        result = take!(result_ch)
+        # Publish so TUI can show agent evals in console
+        src = get(request, :source, :agent)
+        _publish_stream("debug_eval", _serialize_result((source = src, code = code, result = result)))
+        return (type = :debug_eval_result, result = result)
+
+    elseif msg_type == :debug_continue
+        resume_ch = _DEBUG_RESUME_CH[]
+        resume_ch === nothing &&
+            return (type = :error, message = "Not paused at a breakpoint")
+        put!(resume_ch, :continue)
+        return (type = :ok, message = "Execution resumed")
+
     else
         return (type = :error, message = "unknown request type: $msg_type")
     end
@@ -1575,6 +1719,25 @@ function _serve(;
     end
 
     _start_revise_watcher()
+
+    # Install Infiltrator hook if available — makes @infiltrate route through
+    # the gate's breakpoint protocol instead of opening an interactive prompt.
+    try
+        _install_infiltrator_hook!()
+    catch
+        # Infiltrator not loaded yet — will be picked up by package callback below.
+    end
+    # Register a package-load callback so the hook installs as soon as Infiltrator
+    # gets loaded (e.g. via `using GateToolTest` from the REPL).
+    push!(Base.package_callbacks, function (pkgid)
+        _RUNNING[] || return
+        _INFILTRATOR_HOOKED[] && return
+        pkgid.name == "Infiltrator" || return
+        try
+            _install_infiltrator_hook!()
+        catch
+        end
+    end)
 
     emoticon = try
         parentmodule(@__MODULE__).load_personality()

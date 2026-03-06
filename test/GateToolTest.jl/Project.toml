@@ -3,8 +3,13 @@ uuid = "2d4483d8-a6b7-4336-b117-cd02e23f7d9e"
 version = "0.1.0"
 
 [deps]
+Infiltrator = "5903a43b-9cc3-4c30-8d17-598619ec4e9b"
 Kaimon = "d3856c55-31fd-4246-b7e8-380411123c01"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 Tachikoma = "468859d6-42d8-48b7-8ad9-1d312e0e3b0a"
+
+[compat]
+Infiltrator = "1.9.8"
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"

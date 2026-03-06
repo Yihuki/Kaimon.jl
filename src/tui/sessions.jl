@@ -1,5 +1,8 @@
 # ── Sessions Tab (REPL gates + MCP agents) ────────────────────────────────
 
+const _EVAL_SPINNER = ("◐", "◓", "◑", "◒")
+_eval_icon(tick::Int) = _EVAL_SPINNER[mod1(tick ÷ 4 + 1, length(_EVAL_SPINNER))]
+
 function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
     cols = split_layout(m.sessions_layout, area)
     length(cols) < 2 && return
@@ -27,9 +30,10 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
 
     items = ListItem[]
     for conn in connections
-        icon = conn.status == :connected ? "●" : conn.status == :stalled ? "◑" : conn.status == :connecting ? "◐" : "○"
+        icon = conn.status == :connected ? "●" : conn.status == :evaluating ? _eval_icon(m.tick) : conn.status == :stalled ? "◑" : conn.status == :connecting ? "◐" : "○"
         style =
             conn.status == :connected ? tstyle(:success) :
+            conn.status == :evaluating ? tstyle(:accent) :
             conn.status == :stalled ? tstyle(:warning) :
             conn.status == :connecting ? tstyle(:warning) : tstyle(:error)
         dname = isempty(conn.display_name) ? conn.name : conn.display_name

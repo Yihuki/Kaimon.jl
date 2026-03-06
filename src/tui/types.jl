@@ -75,6 +75,8 @@ end
 @kwdef mutable struct KaimonModel <: Model
     quit::Bool = false
     shutting_down::Bool = false
+    quit_confirm::Bool = false
+    quit_confirm_modal::Any = nothing  # Modal instance
     tick::Int = 0
 
     # Tabs: 1=Server, 2=Sessions, 3=Activity, 4=Config
@@ -198,7 +200,7 @@ end
     # Tab 5: 1=form, 2=output | Tab 6: 1=runs list, 2=results
     # Tab 7: 1=form, 2=horde, 3=output
     focused_pane::Dict{Int,Int} =
-        Dict(1 => 2, 2 => 1, 3 => 1, 4 => 1, 5 => 1, 6 => 1, 7 => 1)
+        Dict(1 => 2, 2 => 1, 3 => 1, 4 => 1, 5 => 1, 6 => 1, 7 => 1, 8 => 2)
 
     # ── Tests tab (tab 6) ──
     test_runs::Vector{TestRun} = TestRun[]
@@ -281,6 +283,9 @@ end
     # ── Collection Manager modal ──
     search_manage_open::Bool = false
     search_manage_selected::Int = 1
+    search_manage_pane::Union{ScrollPane,Nothing} = nothing  # ScrollPane for entries list
+    _search_manage_pane_synced::Int = 0  # entries count when pane was last built
+    _search_manage_pane_sel::Int = 0     # selected index when pane was last built
     search_manage_entries::Vector{
         @NamedTuple{
             label::String,
@@ -316,6 +321,29 @@ end
         extensions::Vector{String},
     } = (type = "", dirs = String[], extensions = String[])
 
+    # ── Debug tab (tab 8) ──
+    debug_state::Symbol = :idle           # :idle, :paused
+    debug_session_key::String = ""        # which gate session is paused
+    debug_file::String = ""
+    debug_line::Int = 0
+    debug_locals::Vector{@NamedTuple{name::String, type::String, value::String}} =
+        @NamedTuple{name::String, type::String, value::String}[]
+    debug_history::Vector{@NamedTuple{source::Symbol, code::String, result::String}} =
+        @NamedTuple{source::Symbol, code::String, result::String}[]  # :agent or :user
+    debug_locals_pane::Union{ScrollPane,Nothing} = nothing
+    debug_console_pane::Union{ScrollPane,Nothing} = nothing
+    debug_input::Any = nothing            # TextInput for infil> prompt
+    debug_input_editing::Bool = false
+    debug_user_interacted::Bool = false          # user typed in console this session
+    debug_agent_continue_pending::Bool = false  # agent requested continue
+    debug_console_wrap::Bool = true       # word wrap in console pane
+    debug_cmd_history::Vector{String} = String[]   # command history for up/down
+    debug_cmd_history_idx::Int = 0        # 0 = not browsing, 1 = most recent
+    _debug_consent_modal::Any = nothing  # Modal instance for agent consent
+    debug_layout::ResizableLayout = ResizableLayout(Vertical, [Percent(40), Fill()])
+    _debug_locals_synced::Int = 0         # for incremental pane sync
+    _debug_history_synced::Int = 0
+
     # ── Code staleness (Revise reload) ──
     _code_stale::Bool = false
     _code_last_check::Float64 = 0.0
@@ -326,7 +354,7 @@ end
 
 # Number of focusable panes per tab
 # Tab order: 1=Server 2=Sessions 3=Activity 4=Search 5=Tests 6=Config 7=Advanced
-const _PANE_COUNTS = Dict(1 => 2, 2 => 3, 3 => 2, 4 => 3, 5 => 2, 6 => 3, 7 => 3)
+const _PANE_COUNTS = Dict(1 => 2, 2 => 3, 3 => 2, 4 => 3, 5 => 2, 6 => 3, 7 => 3, 8 => 2)
 
 """Return the border style for a pane — highlighted if focused."""
 function _pane_border(m::KaimonModel, tab::Int, pane::Int)
