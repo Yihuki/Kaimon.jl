@@ -1,6 +1,26 @@
 # ── Update ────────────────────────────────────────────────────────────────────
 
 function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
+    # Quit confirmation modal captures all mouse input
+    if m.quit_confirm && m.quit_confirm_modal !== nothing
+        result = handle_mouse!(m.quit_confirm_modal, evt)
+        if result == :confirm
+            m.quit_confirm = false
+            m.quit_confirm_modal = nothing
+            m.shutting_down = true
+        elseif result == :cancel
+            m.quit_confirm = false
+            m.quit_confirm_modal = nothing
+        end
+        return
+    end
+
+    # Debug consent modal captures all mouse input
+    if m.debug_agent_continue_pending
+        Base.invokelatest(_handle_debug_consent_key!, m, evt)
+        return
+    end
+
     # Tab bar click detection
     if evt.button == mouse_left &&
        evt.action == mouse_press &&
@@ -37,6 +57,9 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
         end
         4 => begin
             handle_resize!(m.search_layout, evt)
+            if m.search_manage_open && m.search_manage_pane !== nothing
+                handle_mouse!(m.search_manage_pane, evt)
+            end
             m.search_results_pane !== nothing &&
                 handle_mouse!(m.search_results_pane, evt)
         end
@@ -54,7 +77,19 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
         end
         7 => begin
             handle_resize!(m.advanced_layout, evt)
+            if Base.contains(m._stress_horde_area, evt.x, evt.y)
+                if evt.button == mouse_scroll_up
+                    m.stress_horde_scroll = max(0, m.stress_horde_scroll - 1)
+                elseif evt.button == mouse_scroll_down
+                    m.stress_horde_scroll += 1
+                end
+            end
             m.stress_scroll_pane !== nothing && handle_mouse!(m.stress_scroll_pane, evt)
+        end
+        8 => begin
+            handle_resize!(m.debug_layout, evt)
+            m.debug_locals_pane !== nothing && handle_mouse!(m.debug_locals_pane, evt)
+            m.debug_console_pane !== nothing && handle_mouse!(m.debug_console_pane, evt)
         end
         _ => nothing
     end
@@ -198,10 +233,47 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
     # Ignore input while shutting down
     m.shutting_down && return
 
+    # Quit confirmation modal captures all input
+    if m.quit_confirm && m.quit_confirm_modal !== nothing
+        result = if evt isa MouseEvent
+            handle_mouse!(m.quit_confirm_modal, evt)
+        else
+            # y/n shortcuts
+            if evt.key == :char && evt.char == 'y'
+                :confirm
+            elseif evt.key == :char && (evt.char == 'n' || evt.char == 'q')
+                :cancel
+            else
+                handle_key!(m.quit_confirm_modal, evt)
+            end
+        end
+        if result == :confirm
+            m.quit_confirm = false
+            m.quit_confirm_modal = nothing
+            m.shutting_down = true
+        elseif result == :cancel
+            m.quit_confirm = false
+            m.quit_confirm_modal = nothing
+        end
+        return
+    end
+
     # When a modal flow is active, route all input there
     if m.config_flow != FLOW_IDLE
         evt.key == :escape && (m.config_flow = FLOW_IDLE; return)
         handle_flow_input!(m, evt)
+        return
+    end
+
+    # When a debug consent modal is open, capture all input
+    if m.debug_agent_continue_pending
+        Base.invokelatest(_handle_debug_consent_key!, m, evt)
+        return
+    end
+
+    # When a stress modal is open, capture all input
+    if m.active_tab == 7 && m.stress_modal != :none
+        _handle_stress_modal_key!(m, evt)
         return
     end
 
@@ -241,18 +313,33 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
         return
     end
 
+    # When debug input is being edited, capture all input
+    if m.active_tab == 8 && m.debug_input_editing
+        Base.invokelatest(_handle_debug_input_edit!, m, evt)
+        return
+    end
+
     tab = m.active_tab
 
     # ── Global keys (handled before per-tab dispatch) ──
     @match (evt.key, evt.char) begin
-        # Quit
-        (:char, 'q') => (m.shutting_down = true; return)
+        # Quit (skip when debug console is active — let it type)
+        (:char, 'q') => begin
+            if m.active_tab == 8 && m.debug_state == :paused && get(m.focused_pane, 8, 1) == 2
+                # Fall through to per-tab dispatch
+            else
+                m.quit_confirm = true; return
+            end
+        end
+
+        # Ctrl-C: quit confirmation
+        (:ctrl_c, _) => (m.quit_confirm = true; return)
 
         # Ctrl-U: Revise reload
         (:ctrl, 'u') => (_revise_reload!(m); return)
 
         # Tab switching: number keys
-        (:char, c) where {'1' <= c <= '7'} => begin
+        (:char, c) where {'1' <= c <= '8'} => begin
             _switch_tab!(m, Int(c) - Int('0'))
             return
         end
@@ -305,17 +392,34 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
             # spurious KeyEvent(:escape) events within the first second.
             time() - m.start_time < 1.0 && return
             @match tab begin
-                7 => (m.stress_state == STRESS_RUNNING && _cancel_stress_test!(m); return)
+                7 => begin
+                    if m.stress_modal != :none
+                        m.stress_modal = :none
+                    elseif m.stress_state == STRESS_RUNNING
+                        _cancel_stress_test!(m)
+                    else
+                        m.quit_confirm = true
+                    end
+                    return
+                end
                 5 => (_handle_tests_escape!(m); return)
+                8 => begin
+                    if m.debug_input_editing
+                        m.debug_input_editing = false
+                    else
+                        m.quit_confirm = true
+                    end
+                    return
+                end
                 4 => begin
                     if m.search_query_editing
                         m.search_query_editing = false
                     else
-                        m.shutting_down = true
+                        m.quit_confirm = true
                     end
                     return
                 end
-                _ => (m.shutting_down = true)
+                _ => (m.quit_confirm = true)
             end
             return
         end
@@ -366,6 +470,7 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
         end
 
         7 => _handle_stress_key!(m, evt)
+        8 => Base.invokelatest(_handle_debug_key!, m, evt)
         _ => nothing
     end
 end
@@ -477,8 +582,11 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
 
         (7, 1) => @match evt.key begin
             :up => (m.stress_field_idx = max(1, m.stress_field_idx - 1))
-            :down => (m.stress_field_idx = min(6, m.stress_field_idx + 1))
+            :down => (m.stress_field_idx = min(8, m.stress_field_idx + 1))
             :enter => _handle_stress_enter!(m)
+            # PageUp/PageDown scroll the horde/log without leaving the form
+            :pageup => (m.stress_horde_scroll = max(0, m.stress_horde_scroll - 5))
+            :pagedown => (m.stress_horde_scroll += 5)
             _ => nothing
         end
         (7, 2) => begin
@@ -492,6 +600,16 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
         end
         (7, 3) =>
             (m.stress_scroll_pane !== nothing && handle_key!(m.stress_scroll_pane, evt))
+
+        (8, 1) =>
+            (m.debug_locals_pane !== nothing && handle_key!(m.debug_locals_pane, evt))
+        (8, 2) => begin
+            if m.debug_input_editing && m.debug_input !== nothing
+                handle_key!(m.debug_input, evt)
+            elseif m.debug_console_pane !== nothing
+                handle_key!(m.debug_console_pane, evt)
+            end
+        end
 
         _ => nothing
     end
@@ -626,7 +744,7 @@ function _switch_tab!(m::KaimonModel, tab::Int)
 end
 
 # Tab label lengths for mouse hit testing (must match the TabBar labels in view)
-const _TAB_LABEL_LENS = [8, 10, 10, 8, 7, 8, 10]  # "1 Server", "2 Sessions", "3 Activity", "4 Search", "5 Tests", "6 Config", "7 Advanced"
+const _TAB_LABEL_LENS = [8, 10, 10, 8, 7, 8, 10, 7]  # "1 Server", "2 Sessions", "3 Activity", "4 Search", "5 Tests", "6 Config", "7 Advanced", "8 Debug"
 const _TAB_SEPARATOR_LEN = 3  # " │ "
 
 """Determine which tab (1-7) was clicked at `click_x`, or 0 if none."""

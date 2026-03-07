@@ -15,7 +15,7 @@ function _view_search_manage(m::KaimonModel, area::Rect, buf::Buffer)
     border_s = tstyle(:accent, bold = true)
     inner = if animations_enabled()
         border_shimmer!(buf, rect, border_s.fg, m.tick; box = BOX_HEAVY, intensity = 0.12)
-        title = " Collection Manager "
+        title = "Collection Manager"
         if rect.width > length(title) + 4
             set_string!(buf, rect.x + 2, rect.y, title, tstyle(:accent, bold = true))
         end
@@ -23,7 +23,7 @@ function _view_search_manage(m::KaimonModel, area::Rect, buf::Buffer)
     else
         render(
             Block(
-                title = " Collection Manager ",
+                title = "Collection Manager",
                 border_style = border_s,
                 title_style = border_s,
                 box = BOX_HEAVY,
@@ -41,17 +41,18 @@ function _view_search_manage(m::KaimonModel, area::Rect, buf::Buffer)
         end
     end
 
-    y = inner.y
     x = inner.x + 1
-    max_y = bottom(inner)
     max_w = inner.width - 2
+    max_y = bottom(inner)
 
-    # Column headers
-    _write_spans!(buf, x, y, [("  Session", tstyle(:text, bold = true))])
-    # Right-aligned columns
+    # Column header positions
     col_col_x = x + 24
     vec_col_x = x + 40
     stat_col_x = x + 49
+
+    # Column headers
+    y = inner.y
+    _write_spans!(buf, x, y, [("  Session", tstyle(:text, bold = true))])
     if col_col_x + 10 < x + max_w
         set_string!(buf, col_col_x, y, "Collection", tstyle(:text, bold = true))
     end
@@ -67,82 +68,17 @@ function _view_search_manage(m::KaimonModel, area::Rect, buf::Buffer)
     sep = "─"^min(max_w, 64)
     y <= max_y && (set_string!(buf, x, y, sep, tstyle(:border)); y += 1)
 
-    # Entries
-    existing = Set(m.search_collections)
-    for (i, entry) in enumerate(entries)
-        y > max_y - 4 && break
-        is_selected = i == m.search_manage_selected
-
-        # Status icon
-        icon, icon_style = if entry.status == :connected
-            "● ", tstyle(:success)
-        elseif entry.status == :disconnected
-            "○ ", tstyle(:error)
-        elseif entry.status == :pwd
-            "◇ ", tstyle(:text_dim)
-        elseif entry.status == :external
-            "◆ ", tstyle(:text)
-        else
-            "○ ", tstyle(:text_dim)
-        end
-
-        cursor = is_selected ? "▸" : " "
-        cursor_style = is_selected ? tstyle(:accent, bold = true) : tstyle(:text)
-
-        # Session label (truncated)
-        label = entry.label
-        max_label = 20
-        if length(label) > max_label
-            label = first(label, max_label - 1) * "…"
-        end
-        label_style = is_selected ? tstyle(:accent, bold = true) : tstyle(:text)
-
-        set_string!(buf, x, y, cursor, cursor_style)
-        set_string!(buf, x + 1, y, icon, icon_style)
-        set_string!(buf, x + 3, y, label, label_style)
-
-        # Collection name
-        col = entry.collection
-        if !isempty(col) && col_col_x + length(col) < x + max_w
-            col_display = length(col) > 14 ? first(col, 13) * "…" : col
-            col_style = col in existing ? tstyle(:accent) : tstyle(:text_dim)
-            set_string!(buf, col_col_x, y, col_display, col_style)
-        end
-
-        # Vector count
-        info = get(m.search_manage_col_info, col, Dict())
-        if !isempty(info) && vec_col_x + 7 < x + max_w
-            vcount = get(info, "vectors_count", get(info, "points_count", nothing))
-            vstr = vcount !== nothing ? string(vcount) : "—"
-            set_string!(buf, vec_col_x, y, lpad(vstr, 7), tstyle(:text))
-        elseif col ∉ existing && vec_col_x + 7 < x + max_w
-            set_string!(buf, vec_col_x, y, "      —", tstyle(:text_dim))
-        end
-
-        # Status column
-        if stat_col_x + 4 < x + max_w
-            op_status = get(m.search_manage_op_status, col, "")
-            if !isempty(op_status)
-                # Show operation in progress
-                set_string!(buf, stat_col_x, y, op_status, tstyle(:warning))
-            elseif col ∉ existing
-                set_string!(buf, stat_col_x, y, "not indexed", tstyle(:text_dim))
-            else
-                stale = get(m.search_manage_stale, col, -1)
-                if stale == 0
-                    set_string!(buf, stat_col_x, y, "up to date", tstyle(:success))
-                elseif stale > 0
-                    set_string!(buf, stat_col_x, y, "$stale stale", tstyle(:warning))
-                elseif stale == -1 && !isempty(info)
-                    set_string!(buf, stat_col_x, y, "—", tstyle(:text_dim))
-                end
-            end
-        end
-
-        y += 1
-    end
-
-    if n == 0
+    # ── Entries ScrollPane ──
+    _sync_search_manage_pane!(m, max_w)
+    pane = m.search_manage_pane
+    if pane !== nothing && n > 0
+        # Entries area: from current y to before hints/sub-views (leave 4 rows at bottom)
+        entries_h = max(max_y - y - 3, 1)  # reserve blank + 2 hint lines
+        entries_area = Rect(inner.x, y, inner.width, entries_h)
+        pane.block = Block()  # no border — entries are inside the modal border
+        render(pane, entries_area, buf)
+        y += entries_h
+    elseif n == 0
         y <= max_y &&
             (set_string!(buf, x + 2, y, "No sessions connected", tstyle(:text_dim)); y += 1)
     end
@@ -217,6 +153,139 @@ function _view_search_manage(m::KaimonModel, area::Rect, buf::Buffer)
             )
         end
     end
+end
+
+# ── ScrollPane sync for Collection Manager entries ─────────────────────────
+
+"""Build/rebuild the ScrollPane content from search_manage_entries."""
+function _sync_search_manage_pane!(m::KaimonModel, max_w::Int)
+    entries = m.search_manage_entries
+    n = length(entries)
+    sel = m.search_manage_selected
+    existing = Set(m.search_collections)
+
+    # Rebuild whenever selection, entry count, or info data changes
+    needs_rebuild = m.search_manage_pane === nothing ||
+        m._search_manage_pane_synced != n ||
+        m._search_manage_pane_sel != sel
+
+    # Also rebuild if info dicts have data (they change asynchronously)
+    # or any entry is evaluating (spinner animation needs tick updates)
+    if !needs_rebuild && (
+        !isempty(m.search_manage_col_info) ||
+        !isempty(m.search_manage_op_status) ||
+        !isempty(m.search_manage_stale) ||
+        any(e -> e.status == :evaluating, entries)
+    )
+        needs_rebuild = true
+    end
+
+    needs_rebuild || return
+
+    if m.search_manage_pane === nothing
+        m.search_manage_pane = ScrollPane(Vector{Span}[]; following = false)
+    end
+
+    pane = m.search_manage_pane::ScrollPane
+
+    # Column offsets
+    col_off = 24
+    vec_off = 40
+    stat_off = 49
+
+    lines = Vector{Span}[]
+    for (i, entry) in enumerate(entries)
+        is_selected = i == sel
+        row = Span[]
+
+        # Cursor
+        cursor = is_selected ? "▸" : " "
+        push!(row, Span(cursor, is_selected ? tstyle(:accent, bold = true) : tstyle(:text)))
+
+        # Status icon
+        icon, icon_style = if entry.status == :connected
+            "● ", tstyle(:success)
+        elseif entry.status == :evaluating
+            _eval_icon(m.tick) * " ", tstyle(:accent)
+        elseif entry.status == :disconnected
+            "○ ", tstyle(:error)
+        elseif entry.status == :pwd
+            "◇ ", tstyle(:text_dim)
+        elseif entry.status == :external
+            "◆ ", tstyle(:text)
+        else
+            "○ ", tstyle(:text_dim)
+        end
+        push!(row, Span(icon, icon_style))
+
+        # Session label (truncated + padded to column boundary)
+        label = entry.label
+        max_label = 20
+        if length(label) > max_label
+            label = first(label, max_label - 1) * "…"
+        end
+        label_style = is_selected ? tstyle(:accent, bold = true) : tstyle(:text)
+        push!(row, Span(rpad(label, col_off - 3), label_style))
+
+        # Collection name
+        col = entry.collection
+        if !isempty(col)
+            col_display = length(col) > 14 ? first(col, 13) * "…" : col
+            col_style = col in existing ? tstyle(:accent) : tstyle(:text_dim)
+            push!(row, Span(rpad(col_display, vec_off - col_off), col_style))
+        else
+            push!(row, Span(" "^(vec_off - col_off), tstyle(:text_dim)))
+        end
+
+        # Vector count
+        info = get(m.search_manage_col_info, col, Dict())
+        if !isempty(info)
+            vcount = get(info, "vectors_count", get(info, "points_count", nothing))
+            vstr = vcount !== nothing ? lpad(string(vcount), 7) : "      —"
+            push!(row, Span(rpad(vstr, stat_off - vec_off), tstyle(:text)))
+        elseif col ∉ existing
+            push!(row, Span(rpad("      —", stat_off - vec_off), tstyle(:text_dim)))
+        else
+            push!(row, Span(" "^(stat_off - vec_off), tstyle(:text)))
+        end
+
+        # Status column
+        op_status = get(m.search_manage_op_status, col, "")
+        if !isempty(op_status)
+            push!(row, Span(op_status, tstyle(:warning)))
+        elseif col ∉ existing
+            push!(row, Span("not indexed", tstyle(:text_dim)))
+        else
+            stale = get(m.search_manage_stale, col, -1)
+            if stale == 0
+                push!(row, Span("up to date", tstyle(:success)))
+            elseif stale > 0
+                push!(row, Span("$stale stale", tstyle(:warning)))
+            elseif stale == -1 && !isempty(info)
+                push!(row, Span("—", tstyle(:text_dim)))
+            end
+        end
+
+        push!(lines, row)
+    end
+
+    pane.content = lines
+
+    # Scroll to keep selection visible (0-based offset, 1-based selection)
+    if sel > 0 && n > 0
+        idx = sel - 1  # 0-based line index
+        # Use last rendered area height if available, else estimate
+        vis_h = pane.last_area.height > 0 ? pane.last_area.height : 8
+        if idx < pane.offset
+            pane.offset = idx
+        elseif idx >= pane.offset + vis_h
+            pane.offset = idx - vis_h + 1
+        end
+        pane.following = false
+    end
+
+    m._search_manage_pane_synced = n
+    m._search_manage_pane_sel = sel
 end
 
 # ── Add Project Sub-View ─────────────────────────────────────────────────────

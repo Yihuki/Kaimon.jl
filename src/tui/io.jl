@@ -6,6 +6,9 @@
 
 const _TUI_LOG_BUFFER = ServerLogEntry[]
 const _TUI_LOG_LOCK = ReentrantLock()
+
+# Track when this Kaimon server process started (used for uptime reporting)
+const _SERVER_START_TIME = Dates.now()
 const _TUI_OLD_LOGGER = Ref{Any}(nothing)
 const _TUI_LOG_FILE = Ref{Union{IOStream,Nothing}}(nothing)
 

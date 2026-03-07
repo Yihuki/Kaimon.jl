@@ -62,7 +62,7 @@ ex(e="function f() ... end", q=false)    # Definitions
 
 ## Environment & Packages
 
-- **Revise.jl** auto-tracks changes in `src/`. If it fails: `manage_repl(command="restart")`, then `ping()`
+- **Revise.jl** auto-tracks changes in `src/`. Do not call `Revise.revise()` — it does nothing useful here. If changes aren't picked up, restart.
 - **Session start:** `investigate_environment()` to see packages, dev status, Revise status
 - **Add packages:** `pkg_add(packages=["Name"])`
 
@@ -73,5 +73,63 @@ ex(e="function f() ... end", q=false)    # Definitions
 **Semantic search:** `qdrant_search_code(query="...")`, `qdrant_list_collections()`
 **Code navigation:** `goto_definition()`, `document_symbols()`, `workspace_symbols()`
 **Testing:** `run_tests(pattern="...")` — spawns subprocess, streams results
-**Utilities:** `format_code(path)`, `ping()`, `investigate_environment()`, `manage_repl(command="restart")`
+**Debugging:** `debug_ctrl()`, `debug_eval()`, `debug_exfiltrate()`, `debug_inspect_safehouse()`, `debug_clear_safehouse()`
+**Utilities:** `format_code(path)`, `ping()`, `investigate_environment()`
 **Help:** `tool_help("tool_name")` or `tool_help("tool_name", extended=true)`
+**Gate tools:** If session tools appear (namespaced as `<ns>.toolname`), use the `gate-tools` MCP prompt for authoring reference.
+
+---
+
+## Debugging with Infiltrator
+
+Kaimon integrates with Infiltrator.jl for interactive breakpoint debugging. When a session hits `@infiltrate`, execution pauses and you can inspect locals and eval expressions in the breakpoint scope. The user can also interact via the TUI's Debug tab simultaneously.
+
+**Triggering a breakpoint:**
+```julia
+# Define a function with @infiltrate (or use debug_exfiltrate to inject one)
+ex(e="using Infiltrator")    # separate eval from the call that triggers it
+ex(e="my_function(args)", q=false)  # will pause at @infiltrate
+```
+
+**Inspecting state:**
+```julia
+debug_ctrl(action="status")           # see file, line, all locals with types
+debug_eval(expression="typeof(x)")    # eval in breakpoint scope
+debug_eval(expression="length(data)") # any valid Julia expression
+```
+
+**Resuming:**
+```julia
+debug_ctrl(action="continue")  # resume execution
+```
+
+**Key points:**
+- `using SomePackage` MUST be a separate eval from the call that hits `@infiltrate`
+- Assignments persist within a breakpoint session: `debug_eval(expression="myVar = a + b")` then `debug_eval(expression="myVar")` works
+- `@exfiltrate` is available in the eval scope — captures variables to Infiltrator's safehouse
+- If the user is actively typing in the TUI debug console, your continue request needs their approval; otherwise it auto-approves
+- Results render with Julia's text/plain display (matrices show formatted, not flat)
+
+**@exfiltrate workflow** (no breakpoint needed):
+```julia
+debug_exfiltrate(code="function f(x)\n  y = x * 2\n  @exfiltrate\n  return y\nend\nf(21)")
+debug_inspect_safehouse()                          # see all captured vars
+debug_inspect_safehouse(expression="x + y")        # eval with captured vars
+debug_clear_safehouse()                            # clean up
+```
+
+---
+
+## Session Restart
+
+Restart is lightweight — the session key is preserved and the gate reconnects automatically. You do lose all in-memory variables and state, so don't restart if that matters. But if you're fighting world-age errors or stale state, restarting is often faster than trying to work around them.
+
+Restart when:
+- You upgraded a package that's already loaded and the code feels stale
+- `__init__` or module-level code changed
+- You're getting `MethodError` / world-age errors that persist after fixing the code
+- The session feels stuck or inconsistent
+
+```julia
+manage_repl(command="restart")
+```

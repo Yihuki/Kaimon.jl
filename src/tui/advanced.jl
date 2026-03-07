@@ -2,6 +2,31 @@
 # StressAgentResult, _write_stress_script, _STRESS_SCRIPT_SOURCE,
 # _parse_stress_kv, and _parse_stress_results live in stress_test.jl
 
+"""
+Return the effective (tool_name, tool_args_json, code) triple for a KaimonModel,
+applying the active scenario preset if one is selected.
+"""
+function _stress_effective_tool(m::KaimonModel)
+    sessions = m.conn_mgr !== nothing ? connected_sessions(m.conn_mgr) : []
+    selected_conn = isempty(sessions) ? nothing : sessions[clamp(m.stress_session_idx, 1, length(sessions))]
+    ns = selected_conn !== nothing ? selected_conn.namespace : ""
+
+    function _maybe_qualify(tool::String)
+        (tool == "ex" || occursin('.', tool) || isempty(ns)) && return tool
+        "$(ns).$(tool)"
+    end
+
+    if m.stress_scenario_idx > 0 && m.stress_scenario_idx <= length(STRESS_SCENARIOS)
+        sc = STRESS_SCENARIOS[m.stress_scenario_idx]
+        tool_name = _maybe_qualify(sc.tool)
+        tool_args_json = sc.args_json
+        code = isempty(sc.code) ? m.stress_code : sc.code
+        return (tool_name, tool_args_json, code)
+    end
+    tool_name = isempty(m.stress_tool) ? "ex" : _maybe_qualify(m.stress_tool)
+    return (tool_name, m.stress_tool_args, m.stress_code)
+end
+
 """Launch the stress test process."""
 function _launch_stress_test!(m::KaimonModel)
     m.stress_state == STRESS_RUNNING && return
@@ -23,7 +48,8 @@ function _launch_stress_test!(m::KaimonModel)
     sess = sessions[idx]
     sess_key = short_key(sess)
 
-    code = m.stress_code
+    tool_name, tool_args_json, code = _stress_effective_tool(m)
+
     n_agents = tryparse(Int, m.stress_agents)
     n_agents === nothing && (n_agents = 5)
     stagger_val = tryparse(Float64, m.stress_stagger)
@@ -47,7 +73,7 @@ function _launch_stress_test!(m::KaimonModel)
 
     script_path = _write_stress_script()
     project_dir = pkgdir(@__MODULE__)
-    cmd = `$(Base.julia_cmd()) --startup-file=no --project=$project_dir $script_path $(m.server_port) $sess_key $code $n_agents $stagger_val $timeout_val`
+    cmd = `$(Base.julia_cmd()) --startup-file=no --project=$project_dir $script_path $(m.server_port) $sess_key $code $n_agents $stagger_val $timeout_val $tool_name $tool_args_json`
 
     Threads.@spawn try
         process = open(cmd, "r")
@@ -69,7 +95,7 @@ function _launch_stress_test!(m::KaimonModel)
         m.stress_process = nothing
 
         # Write results file
-        _write_stress_results!(m, code, sess_key, n_agents, stagger_val, timeout_val)
+        _write_stress_results!(m, tool_name == "ex" ? code : tool_name, sess_key, n_agents, stagger_val, timeout_val)
 
         # Check actual results — did any agents fail?
         all_output = lock(m.stress_output_lock) do
@@ -229,9 +255,11 @@ function _stress_line_spans(line::String, tick::Int)::Vector{Span}
     elseif startswith(line, "START ")
         kv = _parse_stress_kv(line)
         n = get(kv, "agents", "?")
+        tool = get(kv, "tool", "ex")
+        tool_label = tool == "ex" ? "" : "  tool=$tool"
         return Span[
             Span(">>> ", tstyle(:accent, bold = true)),
-            Span("Stress test: $n agents", tstyle(:accent, bold = true)),
+            Span("Stress test: $n agents$tool_label", tstyle(:accent, bold = true)),
         ]
     elseif line == "DONE"
         return Span[Span(">>> Complete", tstyle(:success, bold = true))]
@@ -257,39 +285,109 @@ function _handle_stress_field_edit!(m::KaimonModel, evt::KeyEvent)
             m.stress_code_area.tick = m.tick
             handle_key!(m.stress_code_area, evt)
         end
-        2 => begin
+        _ => begin
+            # Inline text fields (Agents=5, Stagger=6, Timeout=7)
             @match evt.key begin
                 :escape || :enter => (m.stress_editing = false)
-                :left => begin
-                    sessions = m.conn_mgr !== nothing ? connected_sessions(m.conn_mgr) : []
-                    m.stress_session_idx =
-                        mod1(m.stress_session_idx - 1, max(1, length(sessions)))
+                :char => @match fi begin
+                    5 => (m.stress_agents *= evt.char)
+                    6 => (m.stress_stagger *= evt.char)
+                    7 => (m.stress_timeout *= evt.char)
+                    _ => nothing
                 end
-                :right => begin
-                    sessions = m.conn_mgr !== nothing ? connected_sessions(m.conn_mgr) : []
-                    m.stress_session_idx =
-                        mod1(m.stress_session_idx + 1, max(1, length(sessions)))
+                :backspace => @match fi begin
+                    5 => (m.stress_agents = _stress_backspace(m.stress_agents))
+                    6 => (m.stress_stagger = _stress_backspace(m.stress_stagger))
+                    7 => (m.stress_timeout = _stress_backspace(m.stress_timeout))
+                    _ => nothing
                 end
                 _ => nothing
             end
         end
+    end
+end
+
+"""Route key events to the active stress modal."""
+function _handle_stress_modal_key!(m::KaimonModel, evt::KeyEvent)
+    @match m.stress_modal begin
+        :scenario => _handle_scenario_modal_key!(m, evt)
+        :session  => _handle_session_modal_key!(m, evt)
+        :tool     => _handle_tool_modal_key!(m, evt)
+        _ => nothing
+    end
+end
+
+function _handle_scenario_modal_key!(m::KaimonModel, evt::KeyEvent)
+    n = length(STRESS_SCENARIOS) + 1  # +1 for "Custom"
+    @match evt.key begin
+        :up    => (m.stress_modal_sel = max(1, m.stress_modal_sel - 1))
+        :down  => (m.stress_modal_sel = min(n, m.stress_modal_sel + 1))
+        :enter => begin
+            idx = m.stress_modal_sel - 1  # 0 = Custom
+            m.stress_scenario_idx = idx
+            if idx > 0
+                sc = STRESS_SCENARIOS[idx]
+                m.stress_tool = sc.tool
+                m.stress_tool_args = sc.args_json
+                isempty(sc.code) || (m.stress_code = sc.code)
+            end
+            m.stress_modal = :none
+        end
+        :escape => (m.stress_modal = :none)
+        _ => nothing
+    end
+end
+
+function _handle_session_modal_key!(m::KaimonModel, evt::KeyEvent)
+    sessions = m.conn_mgr !== nothing ? connected_sessions(m.conn_mgr) : []
+    n = length(sessions)
+    if n == 0
+        m.stress_modal = :none
+        return
+    end
+    @match evt.key begin
+        :up    => (m.stress_modal_sel = max(1, m.stress_modal_sel - 1))
+        :down  => (m.stress_modal_sel = min(n, m.stress_modal_sel + 1))
+        :enter => begin
+            m.stress_session_idx = m.stress_modal_sel
+            m.stress_modal = :none
+        end
+        :escape => (m.stress_modal = :none)
+        _ => nothing
+    end
+end
+
+function _tool_modal_sync!(m::KaimonModel)
+    m.stress_tool_name_input !== nothing &&
+        (m.stress_tool = Tachikoma.text(m.stress_tool_name_input))
+    m.stress_tool_args_input !== nothing &&
+        (m.stress_tool_args = Tachikoma.text(m.stress_tool_args_input))
+end
+
+function _handle_tool_modal_key!(m::KaimonModel, evt::KeyEvent)
+    name_inp = m.stress_tool_name_input
+    args_inp = m.stress_tool_args_input
+    active = m.stress_modal_tool_field == 1 ? name_inp : args_inp
+
+    @match evt.key begin
+        :escape => begin
+            _tool_modal_sync!(m)
+            m.stress_modal = :none
+        end
+        :enter => begin
+            if m.stress_modal_tool_field == 1
+                m.stress_modal_tool_field = 2
+            else
+                _tool_modal_sync!(m)
+                m.stress_modal = :none
+            end
+        end
+        :tab || :down  => (m.stress_modal_tool_field = 2)
+        :backtab || :up => (m.stress_modal_tool_field = 1)
         _ => begin
-            # Inline text fields (Agents=3, Stagger=4, Timeout=5)
-            @match evt.key begin
-                :escape || :enter => (m.stress_editing = false)
-                :char => @match fi begin
-                    3 => (m.stress_agents *= evt.char)
-                    4 => (m.stress_stagger *= evt.char)
-                    5 => (m.stress_timeout *= evt.char)
-                    _ => nothing
-                end
-                :backspace => @match fi begin
-                    3 => (m.stress_agents = _stress_backspace(m.stress_agents))
-                    4 => (m.stress_stagger = _stress_backspace(m.stress_stagger))
-                    5 => (m.stress_timeout = _stress_backspace(m.stress_timeout))
-                    _ => nothing
-                end
-                _ => nothing
+            if active !== nothing
+                active.tick = m.tick
+                handle_key!(active, evt)
             end
         end
     end
@@ -304,7 +402,7 @@ end
 """Handle Enter on the Advanced tab — open field for editing or run."""
 function _handle_stress_enter!(m::KaimonModel)
     m.stress_state == STRESS_RUNNING && return
-    get(m.focused_pane, 5, 1) == 1 || return
+    get(m.focused_pane, 7, 1) == 1 || return
 
     @match m.stress_field_idx begin
         1 => begin
@@ -312,7 +410,25 @@ function _handle_stress_enter!(m::KaimonModel)
                 CodeEditor(text = m.stress_code, focused = true, tick = m.tick)
             m.stress_editing = true
         end
-        6 => _launch_stress_test!(m)
+        2 => begin
+            m.stress_modal = :tool
+            m.stress_modal_tool_field = 1
+            m.stress_tool_name_input =
+                TextInput(text = m.stress_tool, label = "Name: ", tick = m.tick)
+            m.stress_tool_args_input =
+                TextInput(text = m.stress_tool_args, label = "Args: ", tick = m.tick)
+        end
+        3 => begin
+            m.stress_modal = :scenario
+            m.stress_modal_sel = m.stress_scenario_idx + 1  # 1=Custom, 2+= scenarios
+            m.stress_modal_scroll = 0
+        end
+        4 => begin
+            m.stress_modal = :session
+            m.stress_modal_sel = m.stress_session_idx
+            m.stress_modal_scroll = 0
+        end
+        8 => _launch_stress_test!(m)
         _ => (m.stress_editing = true)
     end
 end
@@ -376,7 +492,7 @@ function _view_stress_form(m::KaimonModel, area::Rect, buf::Buffer)
         title_style = form_focused ? tstyle(:accent, bold = true) : tstyle(:text_dim)
         border_style = form_focused ? tstyle(:accent) : tstyle(:border)
         block = Block(
-            title = " Stress Test Configuration ",
+            title = "Stress Test Configuration",
             border_style = border_style,
             title_style = title_style,
         )
@@ -441,12 +557,56 @@ function _view_stress_form(m::KaimonModel, area::Rect, buf::Buffer)
     end
     y += 1
 
-    # ── Fields 2-5: Session, Agents, Stagger, Timeout ──
+    # ── Field 2: Tool ──
+    y > bottom(inner) - 2 && return
+    is_tool_active = !is_running && form_focused && fi == 2
+    # Build a compact display: tool name + args if set
+    tool_base = isempty(m.stress_tool) ? "(ex — eval path)" : m.stress_tool
+    has_args = !isempty(m.stress_tool) && m.stress_tool_args != "{}" && !isempty(m.stress_tool_args)
+    tool_display = if m.stress_scenario_idx > 0
+        sc = STRESS_SCENARIOS[m.stress_scenario_idx]
+        isempty(sc.tool) ? "(ex — eval path)" : sc.tool
+    elseif has_args
+        "$tool_base  $(m.stress_tool_args)"
+    else
+        tool_base
+    end
+    tool_style = m.stress_scenario_idx > 0 ? tstyle(:text_dim) : tstyle(:text)
+    set_string!(buf, x, y, rpad("Tool:", label_w), tstyle(:text_dim))
+    if is_tool_active
+        set_string!(buf, vx, y, first(tool_display, vw), tstyle(:accent))
+        hint = " [Enter] configure"
+        hint_x = right(inner) - length(hint)
+        hint_x > vx + length(tool_display) &&
+            set_string!(buf, hint_x, y, hint, tstyle(:text_dim))
+    else
+        set_string!(buf, vx, y, first(tool_display, vw), tool_style)
+    end
+    y += 1
+
+    # ── Field 3: Scenario ──
+    y > bottom(inner) - 2 && return
+    is_scen_active = !is_running && form_focused && fi == 3
+    scenario_label =
+        m.stress_scenario_idx == 0 ? "Custom" : STRESS_SCENARIOS[m.stress_scenario_idx].name
+    set_string!(buf, x, y, rpad("Scenario:", label_w), tstyle(:text_dim))
+    if is_scen_active
+        set_string!(buf, vx, y, first(scenario_label, vw), tstyle(:accent))
+        hint = " [Enter] pick"
+        hint_x = right(inner) - length(hint)
+        hint_x > vx + length(scenario_label) &&
+            set_string!(buf, hint_x, y, hint, tstyle(:text_dim))
+    else
+        set_string!(buf, vx, y, first(scenario_label, vw), tstyle(:text))
+    end
+    y += 1
+
+    # ── Fields 4-7: Session, Agents, Stagger, Timeout ──
     inline_fields = [
-        ("Session:", sess_name, 2),
-        ("Agents:", m.stress_agents, 3),
-        ("Stagger:", m.stress_stagger, 4),
-        ("Timeout:", m.stress_timeout, 5),
+        ("Session:", sess_name, 4),
+        ("Agents:", m.stress_agents, 5),
+        ("Stagger:", m.stress_stagger, 6),
+        ("Timeout:", m.stress_timeout, 7),
     ]
 
     for (label, value, idx) in inline_fields
@@ -456,45 +616,34 @@ function _view_stress_form(m::KaimonModel, area::Rect, buf::Buffer)
 
         set_string!(buf, x, y, rpad(label, label_w), tstyle(:text_dim))
 
-        display_val = if idx == 2
-            n = length(sessions)
-            n > 1 ? "◂ $value ▸" : value
-        else
-            value
-        end
-
         if is_editing_this
             # In edit mode — bright highlight + cursor
-            field_text = length(display_val) > vw ? first(display_val, vw) : display_val
+            field_text = length(value) > vw ? first(value, vw) : value
             set_string!(buf, vx, y, field_text, tstyle(:accent, bold = true))
-            if idx != 2  # text cursor on text fields
-                cursor_x = vx + min(length(display_val), vw)
-                if cursor_x <= right(inner) && m.tick % 30 < 20
-                    set_char!(buf, cursor_x, y, '▎', tstyle(:accent))
-                end
+            cursor_x = vx + min(length(value), vw)
+            if cursor_x <= right(inner) && m.tick % 30 < 20
+                set_char!(buf, cursor_x, y, '▎', tstyle(:accent))
             end
-            # Hints for editing mode
-            hint = idx == 2 ? " [◂▸] cycle  [Esc/Enter] done" : " [Esc/Enter] done"
+            hint = " [Esc/Enter] done"
             hint_x = right(inner) - length(hint)
-            if hint_x > vx + length(display_val)
+            if hint_x > vx + length(value)
                 set_string!(buf, hint_x, y, hint, tstyle(:text_dim))
             end
         elseif is_focused
-            # Focused but not editing — dim highlight + Enter hint
-            field_text = length(display_val) > vw ? first(display_val, vw) : display_val
+            field_text = length(value) > vw ? first(value, vw) : value
             set_string!(buf, vx, y, field_text, tstyle(:accent))
-            hint = " [Enter] edit"
+            hint = idx == 4 ? " [Enter] pick" : " [Enter] edit"
             hint_x = right(inner) - length(hint)
-            if hint_x > vx + length(display_val)
+            if hint_x > vx + length(value)
                 set_string!(buf, hint_x, y, hint, tstyle(:text_dim))
             end
         else
-            set_string!(buf, vx, y, first(display_val, vw), tstyle(:text))
+            set_string!(buf, vx, y, first(value, vw), tstyle(:text))
         end
         y += 1
     end
 
-    # ── Field 6: Run / Cancel button ──
+    # ── Field 8: Run / Cancel button ──
     y += 1
     if y <= bottom(inner)
         if is_running
@@ -510,7 +659,7 @@ function _view_stress_form(m::KaimonModel, area::Rect, buf::Buffer)
         else
             run_label = "[ Run Stress Test ]"
             btn_x = x + 2
-            btn_focused = form_focused && fi == 6
+            btn_focused = form_focused && fi == 8
             if btn_focused
                 if animations_enabled()
                     p = pulse(m.tick; period = 60, lo = 0.0, hi = 0.25)
@@ -541,4 +690,7 @@ function _view_stress_form(m::KaimonModel, area::Rect, buf::Buffer)
             tstyle(:text_dim),
         )
     end
+
+    # ── Modal overlay ──
+    m.stress_modal != :none && _view_stress_modal(m, area, buf)
 end

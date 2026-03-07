@@ -1,6 +1,6 @@
 name = "Kaimon"
 uuid = "d3856c55-31fd-4246-b7e8-380411123c01"
-version = "1.0.0"
+version = "1.0.1"
 authors = ["Kahli Burke <kahli@kahliburke.com>"]
 description = "MCP (Model Context Protocol) server for Julia — gives AI agents full access to Julia's runtime for code execution, introspection, debugging, testing, and semantic code search"
 keywords = ["mcp", "ai", "agents", "llm", "julia", "repl", "code-execution", "debugging"]
@@ -11,7 +11,6 @@ Coverage = "a2441757-f6aa-5fb2-8edb-039e3f45d037"
 DBInterface = "a10d1c49-ce27-4219-8d33-6db1a4562965"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
-FreeTypeAbstraction = "663a7486-cb36-511b-a19d-713bb74d65c9"
 HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
 InteractiveUtils = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
 JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
@@ -31,7 +30,6 @@ SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
 SQLite = "0aa819cd-b072-5ff4-a722-6bc24af294d9"
 Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
 Sockets = "6462fe0b-24de-5631-8697-dd941f90decc"
-Supposition = "5a0628fe-1738-4658-9b6d-0b7605a9755b"
 TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 Tachikoma = "468859d6-42d8-48b7-8ad9-1d312e0e3b0a"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
@@ -44,20 +42,17 @@ PDFIO = "4d0d745f-9d9a-592e-8d18-1ad8a0f42b92"
 [extensions]
 KaimonPDFIOExt = "PDFIO"
 
-[sources]
-Tachikoma = {url = "https://github.com/kahliburke/Tachikoma.jl"}
-
 [compat]
 Aqua = "0.8"
-CommonMark = "0.8.16"
+CommonMark = "0.8, 1"
 Coverage = "1.8.1"
 DBInterface = "2.6.1"
 DataFrames = "1.8.1"
 Dates = "1.10"
-FreeTypeAbstraction = "0.10.8"
 HTTP = "1.10"
 InteractiveUtils = "1.10"
 JSON = "1"
+JET = "0.11"
 JuliaFormatter = "1, 2"
 Logging = "1.11.0"
 LoggingExtras = "1.2.0"
@@ -78,7 +73,7 @@ Serialization = "1.11.0"
 Sockets = "1.11.0"
 Supposition = "0.3.5"
 TOML = "1.0"
-Tachikoma = "1.0.0"
+Tachikoma = "1.0.3"
 Test = "1.10"
 UUIDs = "1.11.0"
 ZMQ = "1"
@@ -89,7 +84,8 @@ Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 JET = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"
 JuliaFormatter = "98e50ef6-434e-11e9-1051-2b60c6c9e899"
+Supposition = "5a0628fe-1738-4658-9b6d-0b7605a9755b"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Test", "Dates", "Aqua", "JuliaFormatter", "JET"]
+test = ["Test", "Dates", "Aqua", "JuliaFormatter", "JET", "Supposition"]

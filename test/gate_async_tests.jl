@@ -105,9 +105,6 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 
 @testset "Gate async integration: progress + result" begin
-    # Unique session so we don't collide with a real gate
-    session_id = "test-async-$(bytes2hex(rand(UInt8, 4)))"
-
     tool = Kaimon.Gate.GateTool("counted_op", function (n::Int)
         for i = 1:n
             Kaimon.Gate.progress("step $i of $n")
@@ -115,17 +112,23 @@ end
         return "done:$n"
     end)
 
-    # Stop any existing gate before taking over the global state
+    # If a gate is already running (e.g. this test is run via `ex` inside a live
+    # session), attach to it non-destructively: temporarily add the test tool to
+    # the existing gate's tool list instead of stopping and restarting the gate.
+    # Otherwise start a fresh gate for the test and stop it when done.
     was_running = Kaimon.Gate._RUNNING[]
+
     if was_running
-        Kaimon.Gate.stop()
-        sleep(0.05)
+        orig_tools = copy(Kaimon.Gate._SESSION_TOOLS[])
+        session_id = Kaimon.Gate._SESSION_ID[]
+        Kaimon.Gate._SESSION_TOOLS[] = vcat(orig_tools, [tool])
+        # No sleep needed — sockets are already bound
+    else
+        session_id = "test-async-$(bytes2hex(rand(UInt8, 4)))"
+        Kaimon.Gate._serve(name = "test", session_id = session_id, force = true, tools = [tool])
+        # Give the gate a moment to bind its IPC sockets
+        sleep(0.15)
     end
-
-    Kaimon.Gate._serve(name = "test", session_id = session_id, force = true, tools = [tool])
-
-    # Give the gate a moment to bind its IPC sockets
-    sleep(0.15)
 
     sock_dir = Kaimon.Gate.SOCK_DIR
     rep_path = joinpath(sock_dir, "$session_id.sock")
@@ -193,6 +196,11 @@ end
         close(req)
         close(sub)
         close(ctx)
-        Kaimon.Gate.stop()
+        if was_running
+            # Restore original tools without disturbing the running gate
+            Kaimon.Gate._SESSION_TOOLS[] = orig_tools
+        else
+            Kaimon.Gate.stop()
+        end
     end
 end

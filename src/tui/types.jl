@@ -75,6 +75,8 @@ end
 @kwdef mutable struct KaimonModel <: Model
     quit::Bool = false
     shutting_down::Bool = false
+    quit_confirm::Bool = false
+    quit_confirm_modal::Any = nothing  # Modal instance
     tick::Int = 0
 
     # Tabs: 1=Server, 2=Sessions, 3=Activity, 4=Config
@@ -196,8 +198,9 @@ end
     # Tab 1: 1=status, 2=log | Tab 2: 1=gates, 2=agents, 3=detail
     # Tab 3: 1=list, 2=detail | Tab 4: 1=server, 2=actions, 3=clients
     # Tab 5: 1=form, 2=output | Tab 6: 1=runs list, 2=results
+    # Tab 7: 1=form, 2=horde, 3=output
     focused_pane::Dict{Int,Int} =
-        Dict(1 => 2, 2 => 1, 3 => 1, 4 => 1, 5 => 1, 6 => 1, 7 => 2)
+        Dict(1 => 2, 2 => 1, 3 => 1, 4 => 1, 5 => 1, 6 => 1, 7 => 1, 8 => 2)
 
     # ── Tests tab (tab 6) ──
     test_runs::Vector{TestRun} = TestRun[]
@@ -218,20 +221,30 @@ end
     # ── Advanced tab (stress test) ──
     stress_state::StressState = STRESS_IDLE
     stress_code::String = "sleep(3); 42"
+    stress_tool::String = ""            # MCP tool name; empty = "ex" (eval path)
+    stress_tool_args::String = "{}"     # JSON args for gate tool (used when stress_tool != "ex")
+    stress_scenario_idx::Int = 0        # 0 = custom, 1..N = STRESS_SCENARIOS preset
     stress_agents::String = "5"
     stress_stagger::String = "0.0"
     stress_timeout::String = "30"
     stress_session_idx::Int = 1         # selected session index
-    stress_field_idx::Int = 1           # which form field has focus (1-6, 6=Run)
+    stress_field_idx::Int = 1           # which form field has focus (1-8, 8=Run)
     stress_editing::Bool = false        # true when a form field is in edit mode
     stress_code_area::Any = nothing     # TextArea widget, created on demand
+    stress_modal::Symbol = :none        # :none, :scenario, :session, :tool
+    stress_modal_sel::Int = 1           # highlighted item in list modals
+    stress_modal_scroll::Int = 0        # scroll offset in list modals
+    stress_modal_tool_field::Int = 1    # 1=name, 2=args (within tool modal)
+    stress_tool_name_input::Any = nothing   # TextInput for tool modal name field
+    stress_tool_args_input::Any = nothing   # TextInput for tool modal args field
     stress_output::Vector{String} = String[]
     stress_output_lock::ReentrantLock = ReentrantLock()
     stress_scroll_pane::Union{ScrollPane,Nothing} = nothing
     stress_horde_scroll::Int = 0        # vertical scroll offset for agent horde
+    _stress_horde_area::Rect = Rect()   # cached for mouse scroll hit-testing
     stress_process::Any = nothing       # process handle for kill
     stress_result_file::String = ""     # path to written results
-    advanced_layout::ResizableLayout = ResizableLayout(Vertical, [Fixed(14), Fill()])
+    advanced_layout::ResizableLayout = ResizableLayout(Vertical, [Fixed(16), Fill()])
 
     # ── Search tab (tab 7) ──
     search_layout::ResizableLayout =
@@ -270,6 +283,9 @@ end
     # ── Collection Manager modal ──
     search_manage_open::Bool = false
     search_manage_selected::Int = 1
+    search_manage_pane::Union{ScrollPane,Nothing} = nothing  # ScrollPane for entries list
+    _search_manage_pane_synced::Int = 0  # entries count when pane was last built
+    _search_manage_pane_sel::Int = 0     # selected index when pane was last built
     search_manage_entries::Vector{
         @NamedTuple{
             label::String,
@@ -305,6 +321,29 @@ end
         extensions::Vector{String},
     } = (type = "", dirs = String[], extensions = String[])
 
+    # ── Debug tab (tab 8) ──
+    debug_state::Symbol = :idle           # :idle, :paused
+    debug_session_key::String = ""        # which gate session is paused
+    debug_file::String = ""
+    debug_line::Int = 0
+    debug_locals::Vector{@NamedTuple{name::String, type::String, value::String}} =
+        @NamedTuple{name::String, type::String, value::String}[]
+    debug_history::Vector{@NamedTuple{source::Symbol, code::String, result::String}} =
+        @NamedTuple{source::Symbol, code::String, result::String}[]  # :agent or :user
+    debug_locals_pane::Union{ScrollPane,Nothing} = nothing
+    debug_console_pane::Union{ScrollPane,Nothing} = nothing
+    debug_input::Any = nothing            # TextInput for infil> prompt
+    debug_input_editing::Bool = false
+    debug_user_interacted::Bool = false          # user typed in console this session
+    debug_agent_continue_pending::Bool = false  # agent requested continue
+    debug_console_wrap::Bool = true       # word wrap in console pane
+    debug_cmd_history::Vector{String} = String[]   # command history for up/down
+    debug_cmd_history_idx::Int = 0        # 0 = not browsing, 1 = most recent
+    _debug_consent_modal::Any = nothing  # Modal instance for agent consent
+    debug_layout::ResizableLayout = ResizableLayout(Vertical, [Percent(40), Fill()])
+    _debug_locals_synced::Int = 0         # for incremental pane sync
+    _debug_history_synced::Int = 0
+
     # ── Code staleness (Revise reload) ──
     _code_stale::Bool = false
     _code_last_check::Float64 = 0.0
@@ -315,7 +354,7 @@ end
 
 # Number of focusable panes per tab
 # Tab order: 1=Server 2=Sessions 3=Activity 4=Search 5=Tests 6=Config 7=Advanced
-const _PANE_COUNTS = Dict(1 => 2, 2 => 3, 3 => 2, 4 => 3, 5 => 2, 6 => 3, 7 => 3)
+const _PANE_COUNTS = Dict(1 => 2, 2 => 3, 3 => 2, 4 => 3, 5 => 2, 6 => 3, 7 => 3, 8 => 2)
 
 """Return the border style for a pane — highlighted if focused."""
 function _pane_border(m::KaimonModel, tab::Int, pane::Int)

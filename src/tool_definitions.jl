@@ -3,45 +3,6 @@
 # ============================================================================
 
 """
-    vscode_debug_command(command::String, success_message::String; args=nothing) -> String
-
-Helper function to execute VS Code debug commands via URI.
-Reduces duplication across debug step tools (step_over, step_into, step_out, continue, stop).
-
-# Arguments
-- `command`: VS Code command ID (e.g., "workbench.action.debug.stepOver")
-- `success_message`: Message to return on success
-- `args`: Optional arguments dict (can check for wait_for_response)
-
-# Returns
-Success or error message string
-"""
-function vscode_debug_command(
-    command::String,
-    success_message::String;
-    args = nothing,
-    session::String = "",
-)
-    try
-        # Check if caller wants to wait for response (only step_over supports this)
-        if args !== nothing && get(args, "wait_for_response", false)
-            result = execute_repllike(
-                """execute_vscode_command("$command", wait_for_response=true, timeout=10.0)""";
-                silent = false,
-                quiet = false,
-                session = session,
-            )
-            return result
-        else
-            trigger_vscode_uri(build_vscode_uri(command))
-            return success_message
-        end
-    catch e
-        return "Error executing $command: $e"
-    end
-end
-
-"""
     pkg_operation_tool(operation::String, verb::String, args) -> String
 
 Helper function for package management operations (add/remove).
@@ -133,8 +94,20 @@ end
 ping_tool = @mcp_tool(
     :ping,
     "Check if the MCP server is responsive and return Revise.jl status.",
-    Dict("type" => "object", "properties" => Dict(), "required" => []),
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "extended" => Dict(
+                "type" => "boolean",
+                "description" => "If true, return comprehensive server health stats: uptime, tool execution counts, error summary, memory usage.",
+            ),
+        ),
+        "required" => [],
+    ),
     args -> begin
+        extended = let v = get(args, "extended", false)
+            v === true || v == "true" || v == "1"
+        end
         status = "✓ MCP Server is healthy and responsive\n"
 
         # Check Revise status
@@ -162,15 +135,182 @@ ping_tool = @mcp_tool(
                 dname = isempty(conn.display_name) ? conn.name : conn.display_name
                 icon =
                     conn.status == :connected ? "●" :
+                    conn.status == :evaluating ? "◐" :
+                    conn.status == :stalled ? "◑" :
                     conn.status == :connecting ? "◐" : "○"
                 ntools = length(conn.session_tools)
                 tools_info = ntools > 0 ? ", $(ntools) tools" : ""
-                status *= "\n  $icon $key $dname ($(conn.status), Julia $(conn.julia_version), PID $(conn.pid)$tools_info)"
+                stalled_info = if conn.status == :stalled
+                    ago = round(Int, Dates.value(now() - conn.last_seen) / 1000)
+                    ", last seen $(ago)s ago"
+                else
+                    ""
+                end
+                status *= "\n  $icon $key $dname ($(conn.status), Julia $(conn.julia_version), PID $(conn.pid)$tools_info$stalled_info)"
                 status *= "\n    project: $(conn.project_path)"
             end
         end
 
+        if extended
+            # Server uptime
+            uptime_ms = Dates.value(Dates.now() - _SERVER_START_TIME)
+            uptime_str = let h = uptime_ms ÷ 3_600_000,
+                m = (uptime_ms % 3_600_000) ÷ 60_000,
+                s = (uptime_ms % 60_000) ÷ 1000
+
+                h > 0 ? "$(h)h $(m)m $(s)s" : m > 0 ? "$(m)m $(s)s" : "$(s)s"
+            end
+            status *= "\n\nServer uptime: $uptime_str"
+            status *= "\nStarted: $(Dates.format(_SERVER_START_TIME, "yyyy-mm-dd HH:MM:SS"))"
+            status *= "\nJulia v$(VERSION)  PID: $(getpid())  Threads: $(Threads.nthreads())"
+
+            # Memory
+            used_gb = round((Sys.total_memory() - Sys.free_memory()) / 1024^3, digits = 1)
+            total_gb = round(Sys.total_memory() / 1024^3, digits = 1)
+            status *= "\nMemory: $(used_gb) GB used / $(total_gb) GB total"
+
+            # Tool execution stats (from in-memory ring buffer, TUI mode only)
+            if GATE_MODE[]
+                results = lock(_TUI_TOOL_RESULTS_LOCK) do
+                    copy(_TUI_TOOL_RESULTS_BUFFER)
+                end
+                total = length(results)
+                if total > 0
+                    n_ok = count(r -> r.success, results)
+                    n_err = total - n_ok
+                    err_rate = round(n_err / total * 100, digits = 1)
+                    status *= "\n\nTool executions (last $total in buffer):"
+                    status *= "\n  Success: $n_ok  Error: $n_err  Error rate: $(err_rate)%"
+                    t_ok = _LAST_TOOL_SUCCESS[]
+                    t_err = _LAST_TOOL_ERROR[]
+                    t_ok > 0 && (status *= "  Last success: $(round(Int, time() - t_ok))s ago")
+                    if n_err > 0 && t_err > 0
+                        status *= "\n  Last error: $(round(Int, time() - t_err))s ago"
+                    end
+
+                    # Top 5 tools by call count
+                    counts = Dict{String,Int}()
+                    for r in results
+                        counts[r.tool_name] = get(counts, r.tool_name, 0) + 1
+                    end
+                    top = first(sort(collect(counts), by = last, rev = true), 5)
+                    status *= "\n  Top tools: " * join(["$(t) ($(c))" for (t, c) in top], ", ")
+                end
+
+                # Recent server errors from log buffer
+                errs = lock(_TUI_LOG_LOCK) do
+                    filter(e -> e.level == :error, _TUI_LOG_BUFFER)
+                end
+                if !isempty(errs)
+                    status *= "\n\nServer errors in log buffer: $(length(errs))"
+                    last_e = errs[end]
+                    ts = Dates.format(last_e.timestamp, "HH:MM:SS")
+                    status *= "\n  Last: [$ts] $(first(last_e.message, 100))"
+                end
+            end
+        end
+
         return status
+    end
+)
+
+server_log_tool = @mcp_tool(
+    :server_log,
+    "Retrieve Kaimon server log entries from the in-memory ring buffer (TUI mode) or log file.",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "lines" => Dict(
+                "type" => "integer",
+                "description" => "Number of recent log lines to return (default: 50, max: 500)",
+            ),
+            "level" => Dict(
+                "type" => "string",
+                "description" => "Filter by log level: 'all' (default), 'warn', 'error'",
+            ),
+            "since" => Dict(
+                "type" => "string",
+                "description" => "Return only entries at or after this timestamp (ISO 8601, e.g. '2025-03-01T12:00:00' or '2025-03-01 12:00:00')",
+            ),
+        ),
+        "required" => [],
+    ),
+    args -> begin
+        limit = let v = get(args, "lines", 50)
+            clamp(something(tryparse(Int, string(v)), 50), 1, 500)
+        end
+        level_filter = lowercase(strip(string(get(args, "level", "all"))))
+        since_str = strip(string(get(args, "since", "")))
+
+        since_dt = if isempty(since_str)
+            nothing
+        else
+            ts = nothing
+            for fmt in ("yyyy-mm-ddTHH:MM:SS", "yyyy-mm-dd HH:MM:SS", "yyyy-mm-dd")
+                try
+                    ts = DateTime(since_str, fmt)
+                    break
+                catch
+                end
+            end
+            ts
+        end
+
+        _apply_level_filter(entries, lf) = if lf in ("warn", "warning")
+            filter(e -> e.level in (:warn, :error), entries)
+        elseif lf == "error"
+            filter(e -> e.level == :error, entries)
+        else
+            entries
+        end
+
+        _format_entry(e::ServerLogEntry) =
+            "$(Dates.format(e.timestamp, "yyyy-mm-dd HH:MM:SS")) [$(rpad(uppercase(string(e.level)),5))] $(e.message)"
+
+        if GATE_MODE[]
+            # TUI mode: in-memory ring buffer
+            entries = lock(_TUI_LOG_LOCK) do
+                copy(_TUI_LOG_BUFFER)
+            end
+            entries = _apply_level_filter(entries, level_filter)
+            since_dt !== nothing && filter!(e -> e.timestamp >= since_dt, entries)
+            length(entries) > limit && (entries = entries[end-limit+1:end])
+            isempty(entries) && return "No log entries found matching the specified criteria."
+            return join(_format_entry.(entries), "\n")
+        else
+            # Standalone mode: read from log file
+            log_path = _TUI_LOG_PATH
+            isfile(log_path) || return "Log file not available (server not in TUI mode).\nExpected location: $log_path"
+
+            all_lines = try
+                readlines(log_path)
+            catch e
+                return "Failed to read log file: $e"
+            end
+
+            # Filter by since (log line format: "YYYY-MM-DD HH:MM:SS [LEVEL] msg")
+            if since_dt !== nothing
+                filter!(all_lines) do line
+                    length(line) < 19 && return true
+                    try
+                        DateTime(line[1:19], "yyyy-mm-dd HH:MM:SS") >= since_dt
+                    catch
+                        true
+                    end
+                end
+            end
+
+            # Filter by level
+            if level_filter in ("warn", "warning")
+                filter!(l -> contains(l, "[WARN ") || contains(l, "[ERROR"), all_lines)
+            elseif level_filter == "error"
+                filter!(l -> contains(l, "[ERROR"), all_lines)
+            end
+
+            length(all_lines) > limit && (all_lines = all_lines[end-limit+1:end])
+            isempty(all_lines) && return "No log entries found matching the specified criteria."
+            return join(all_lines, "\n")
+        end
     end
 )
 
@@ -300,13 +440,15 @@ s=true (rare): suppresses agent> prompt and REPL echo for large outputs.""",
 
             # Route through gate if in TUI server mode
             if GATE_MODE[]
+                on_progress = get(args, "_on_progress", nothing)
                 Base.invokelatest(
-                    execute_via_gate,
+                    execute_via_gate_streaming,
                     expr_str;
                     quiet = quiet,
                     silent = silent,
                     max_output = max_output,
                     session = ses,
+                    on_progress = on_progress,
                 )
             else
                 Base.invokelatest(
@@ -396,7 +538,7 @@ Commands:
             while time() < deadline
                 sleep(3.0)
                 new_conn = get_connection_by_key(mgr, key)
-                if new_conn !== nothing && new_conn.status == :connected
+                if new_conn !== nothing && new_conn.status in (:connected, :evaluating)
                     mgr.on_sessions_changed = old_cb
                     return "Session $key restarted. Fresh Julia state. Revise active."
                 end
@@ -1270,244 +1412,246 @@ or when LSP goto_definition doesn't work.
     end
 )
 
-# High-level debugging workflow tools
-open_and_breakpoint_tool = @mcp_tool(
-    :open_file_and_set_breakpoint,
-    "Open a file in VS Code and set a breakpoint at a specific line. Requires VS Code.",
+# ============================================================================
+# Agent-Assisted Debugging Tools (Infiltrator.jl + Breakpoint Hooks)
+# ============================================================================
+
+debug_exfiltrate_tool = @mcp_tool(
+    :debug_exfiltrate,
+    """Evaluate code containing @exfiltrate on a gate session to capture local variables.
+
+Infiltrator.jl is loaded automatically on the gate if available. The code should
+typically be a function redefinition with @exfiltrate inserted at the point of interest.
+
+Workflow:
+1. Read the function you want to debug
+2. Add @exfiltrate at the point of interest
+3. Call this tool with the modified function definition
+4. Trigger the code path (call the function)
+5. Use debug_inspect_safehouse to see captured variables""",
     Dict(
         "type" => "object",
         "properties" => Dict(
-            "file_path" => Dict(
+            "code" => Dict(
                 "type" => "string",
-                "description" => "Absolute path to the file",
+                "description" => "Julia code containing @exfiltrate calls",
             ),
-            "line" => Dict(
-                "type" => "integer",
-                "description" => "Line number for breakpoint (optional)",
+            "session" => Dict(
+                "type" => "string",
+                "description" => "Session key (8-char ID). Required when multiple sessions are connected.",
             ),
         ),
-        "required" => ["file_path"],
+        "required" => ["code"],
     ),
     function (args)
+        session = get(args, "session", "")
+        code = get(args, "code", "")
+        isempty(code) && return "Error: code is required"
+        full_code = """
         try
-            file_path = get(args, "file_path", "")
-            line = get(args, "line", nothing)
-
-            if isempty(file_path)
-                return "Error: file_path is required"
-            end
-
-            # Make sure it's an absolute path
-            abs_path = isabspath(file_path) ? file_path : joinpath(pwd(), file_path)
-
-            if !isfile(abs_path)
-                return "Error: File does not exist: $abs_path"
-            end
-
-            # Open the file using vscode.open command
-            uri = "file://$abs_path"
-            args_json = JSON.json([uri])
-            args_encoded = HTTP.URIs.escapeuri(args_json)
-            open_uri = build_vscode_uri("vscode.open"; args = args_encoded)
-            trigger_vscode_uri(open_uri)
-
-            sleep(0.5)  # Give VS Code time to open the file
-
-            # Navigate to line if specified
-            if line !== nothing
-                goto_uri = build_vscode_uri("workbench.action.gotoLine")
-                trigger_vscode_uri(goto_uri)
-                sleep(0.3)
-            end
-
-            # Set breakpoint
-            bp_uri = build_vscode_uri("editor.debug.action.toggleBreakpoint")
-            trigger_vscode_uri(bp_uri)
-
-            result = "Opened $abs_path"
-            if line !== nothing
-                result *= " and navigated to line $line"
-            end
-            result *= ", breakpoint set"
-
-            return result
+            using Infiltrator
         catch e
-            return "Error: $e"
+            error("Infiltrator.jl not found. Run `]add Infiltrator` in your project environment.")
         end
+        $(code)
+        """
+        execute_repllike(full_code; quiet = false, session = session)
     end
 )
 
-start_debug_session_tool = @mcp_tool(
-    :start_debug_session,
-    "Start a debugging session in VS Code. Opens debug view and begins debugging. Requires VS Code.",
-    Dict("type" => "object", "properties" => Dict(), "required" => []),
-    function (args)
-        try
-            # Open debug view
-            view_uri = build_vscode_uri("workbench.view.debug")
-            trigger_vscode_uri(view_uri)
+debug_inspect_safehouse_tool = @mcp_tool(
+    :debug_inspect_safehouse,
+    """Inspect variables captured by @exfiltrate in Infiltrator's safehouse.
 
-            sleep(0.3)
-
-            # Start debugging
-            start_uri = build_vscode_uri("workbench.action.debug.start")
-            trigger_vscode_uri(start_uri)
-
-            return "Debug session started. Use stepping commands to navigate through code."
-        catch e
-            return "Error starting debug session: $e"
-        end
-    end
-)
-
-add_watch_expression_tool = @mcp_tool(
-    :add_watch_expression,
-    "Add a watch expression to monitor during debugging. Requires VS Code with active debug session.",
+With no expression: lists all captured variables with types and values.
+With an expression: evaluates it using safehouse variables via Infiltrator.@withstore.""",
     Dict(
         "type" => "object",
         "properties" => Dict(
-            "expression" =>
-                Dict("type" => "string", "description" => "Expression to watch"),
+            "expression" => Dict(
+                "type" => "string",
+                "description" => "Optional expression to evaluate using safehouse variables (e.g., 'typeof(x)' or 'length(data)')",
+            ),
+            "session" => Dict(
+                "type" => "string",
+                "description" => "Session key (8-char ID). Required when multiple sessions are connected.",
+            ),
+        ),
+        "required" => [],
+    ),
+    function (args)
+        session = get(args, "session", "")
+        expr = get(args, "expression", "")
+        if isempty(expr)
+            code = """
+            using Infiltrator
+            let names_list = propertynames(Infiltrator.safehouse)
+                if isempty(names_list)
+                    "Safehouse is empty. No variables captured yet."
+                else
+                    lines = String[]
+                    for n in names_list
+                        v = getproperty(Infiltrator.safehouse, n)
+                        push!(lines, "\$n::\$(typeof(v)) = \$(repr(v; context=:limit=>true))")
+                    end
+                    join(lines, "\\n")
+                end
+            end
+            """
+            execute_repllike(code; quiet = false, session = session)
+        else
+            code = """
+            using Infiltrator
+            Infiltrator.@withstore $(expr)
+            """
+            execute_repllike(code; quiet = false, session = session)
+        end
+    end
+)
+
+debug_clear_safehouse_tool = @mcp_tool(
+    :debug_clear_safehouse,
+    "Clear all variables from Infiltrator's safehouse.",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "session" => Dict(
+                "type" => "string",
+                "description" => "Session key (8-char ID). Required when multiple sessions are connected.",
+            ),
+        ),
+        "required" => [],
+    ),
+    function (args)
+        session = get(args, "session", "")
+        execute_repllike(
+            "using Infiltrator; Infiltrator.clear_store!(); \"Safehouse cleared.\"";
+            quiet = false,
+            session = session,
+        )
+    end
+)
+
+debug_ctrl_tool = @mcp_tool(
+    :debug_ctrl,
+    """Control a debug session paused at an @infiltrate breakpoint.
+
+Actions:
+- 'status': Check if paused, see file/line and local variables
+- 'continue': Resume normal execution from the breakpoint""",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "action" => Dict(
+                "type" => "string",
+                "enum" => ["status", "continue"],
+                "description" => "Action to take: status or continue",
+                "default" => "status",
+            ),
+            "session" => Dict(
+                "type" => "string",
+                "description" => "Session key (8-char ID). Required when multiple sessions are connected.",
+            ),
+        ),
+        "required" => [],
+    ),
+    function (args)
+        session = get(args, "session", "")
+        action = get(args, "action", "status")
+        conn, err = _resolve_gate_conn(session)
+        err !== nothing && return err
+        try
+            if action == "status"
+                resp = _gate_send_recv(conn, (type = :debug_status,))
+                if get(resp, :is_paused, false)
+                    lines = String["Paused at breakpoint:"]
+                    push!(lines, "  File: $(get(resp, :file, "unknown"))")
+                    push!(lines, "  Line: $(get(resp, :line, 0))")
+                    locals = get(resp, :locals, Dict())
+                    types = get(resp, :locals_types, Dict())
+                    if !isempty(locals)
+                        push!(lines, "  Locals:")
+                        for (name, val) in sort(collect(locals); by=first)
+                            t = get(types, name, "Any")
+                            push!(lines, "    $name::$t = $val")
+                        end
+                    end
+                    push!(lines, "\nUse debug_eval to evaluate expressions in this context.")
+                    push!(lines, "Use debug_ctrl with action='continue' to resume.")
+                    join(lines, "\n")
+                else
+                    "Not paused at a breakpoint."
+                end
+            elseif action == "continue"
+                # Request consent through the TUI before resuming.
+                # The TUI polls _DEBUG_CONTINUE_REQUEST on tick and shows
+                # a consent prompt; the response comes back on a Channel.
+                response_ch = Channel{Symbol}(1)
+                session_key = short_key(conn)
+                _DEBUG_CONTINUE_REQUEST[] = (session_key = session_key, action = :continue)
+                _DEBUG_CONTINUE_RESPONSE[] = response_ch
+                # Wait for user approval (timeout after 30s)
+                result = timedwait(30.0) do
+                    isready(response_ch)
+                end
+                _DEBUG_CONTINUE_REQUEST[] = nothing
+                _DEBUG_CONTINUE_RESPONSE[] = nothing
+                if result == :timed_out
+                    return "Timed out waiting for user approval in Debug tab."
+                end
+                decision = take!(response_ch)
+                if decision == :denied
+                    return "User denied the continue request."
+                end
+                resp = _gate_send_recv(conn, (type = :debug_continue, action = :continue))
+                return get(resp, :message, "Resumed execution")
+            else
+                return "Error: unknown action '$action'. Use 'status' or 'continue'."
+            end
+        catch e
+            "Error: $e"
+        end
+    end
+)
+
+debug_eval_tool = @mcp_tool(
+    :debug_eval,
+    """Evaluate an expression in the context of a paused breakpoint.
+
+Requires an active debug session (execution paused at @infiltrate).
+The expression has access to all local variables at the breakpoint.""",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "expression" => Dict(
+                "type" => "string",
+                "description" => "Julia expression to evaluate in breakpoint context (e.g., 'typeof(x)' or 'length(data)')",
+            ),
+            "session" => Dict(
+                "type" => "string",
+                "description" => "Session key (8-char ID). Required when multiple sessions are connected.",
+            ),
         ),
         "required" => ["expression"],
     ),
     function (args)
+        session = get(args, "session", "")
+        expression = get(args, "expression", "")
+        isempty(expression) && return "Error: expression is required"
+        conn, err = _resolve_gate_conn(session)
+        err !== nothing && return err
         try
-            expression = get(args, "expression", "")
-
-            if isempty(expression)
-                return "Error: expression is required"
+            resp = _gate_send_recv(conn, (type = :debug_eval, code = expression))
+            result = get(resp, :result, nothing)
+            error_msg = get(resp, :error, nothing)
+            if error_msg !== nothing
+                return "Error: $error_msg"
             end
-
-            # Focus watch view first
-            watch_uri = build_vscode_uri("workbench.debug.action.focusWatchView")
-            trigger_vscode_uri(watch_uri)
-
-            sleep(0.2)
-
-            # Add watch expression
-            add_uri = build_vscode_uri("workbench.action.debug.addWatch")
-            trigger_vscode_uri(add_uri)
-
-            return "Watch expression dialog opened for: $expression (user will need to enter it)"
+            return something(result, "nothing")
         catch e
-            return "Error adding watch expression: $e"
+            "Error: $e"
         end
     end
-)
-
-copy_debug_value_tool = @mcp_tool(
-    :copy_debug_value,
-    "Copy a debug variable value to clipboard. Read with pbpaste (macOS), wl-paste (Wayland), or xclip (X11). Requires VS Code with active debug session.",
-    Dict(
-        "type" => "object",
-        "properties" => Dict(
-            "view" => Dict(
-                "type" => "string",
-                "description" => "Debug view to focus: 'variables' or 'watch'",
-                "enum" => ["variables", "watch"],
-                "default" => "variables",
-            ),
-        ),
-        "required" => [],
-    ),
-    function (args)
-        try
-            view = get(args, "view", "variables")
-
-            # Focus the appropriate debug view
-            if view == "watch"
-                focus_uri = build_vscode_uri("workbench.debug.action.focusWatchView")
-            else
-                focus_uri = build_vscode_uri("workbench.debug.action.focusVariablesView")
-            end
-            trigger_vscode_uri(focus_uri)
-
-            sleep(0.2)
-
-            # Copy the selected value
-            copy_uri = build_vscode_uri("workbench.action.debug.copyValue")
-            trigger_vscode_uri(copy_uri)
-
-            clipboard_cmd = if Sys.isapple()
-                "pbpaste"
-            elseif Sys.islinux()
-                if haskey(ENV, "WAYLAND_DISPLAY")
-                    "wl-paste"
-                else
-                    "xclip -selection clipboard -o (or xsel --clipboard --output)"
-                end
-            elseif Sys.iswindows()
-                "powershell Get-Clipboard"
-            else
-                "appropriate clipboard command for your OS"
-            end
-
-            return """Value copied to clipboard from $(view) view.
-To read the value, run in terminal: $clipboard_cmd
-Note: Make sure a variable is selected/focused in the debug view before copying."""
-        catch e
-            return "Error copying debug value: $e"
-        end
-    end
-)
-
-# Enhanced debugging tools using bidirectional communication
-debug_step_over_tool = @mcp_tool(
-    :debug_step_over,
-    "Step over the current line in the debugger. Requires VS Code with active debug session.",
-    Dict(
-        "type" => "object",
-        "properties" => Dict(
-            "wait_for_response" => Dict(
-                "type" => "boolean",
-                "description" => "Wait for command completion (default: false)",
-                "default" => false,
-            ),
-        ),
-        "required" => [],
-    ),
-    args -> vscode_debug_command(
-        "workbench.action.debug.stepOver",
-        "Stepped over current line";
-        args = args,
-    )
-)
-
-debug_step_into_tool = @mcp_tool(
-    :debug_step_into,
-    "Step into a function call in the debugger. Requires VS Code with active debug session.",
-    Dict("type" => "object", "properties" => Dict(), "required" => []),
-    args -> vscode_debug_command(
-        "workbench.action.debug.stepInto",
-        "Stepped into function",
-    )
-)
-
-debug_step_out_tool = @mcp_tool(
-    :debug_step_out,
-    "Step out of the current function in the debugger. Requires VS Code with active debug session.",
-    Dict("type" => "object", "properties" => Dict(), "required" => []),
-    args -> vscode_debug_command(
-        "workbench.action.debug.stepOut",
-        "Stepped out of current function",
-    )
-)
-
-debug_continue_tool = @mcp_tool(
-    :debug_continue,
-    "Continue execution until next breakpoint or completion. Requires VS Code with active debug session.",
-    Dict("type" => "object", "properties" => Dict(), "required" => []),
-    args ->
-        vscode_debug_command("workbench.action.debug.continue", "Continued execution")
-)
-
-debug_stop_tool = @mcp_tool(
-    :debug_stop,
-    "Stop the current debug session. Requires VS Code.",
-    Dict("type" => "object", "properties" => Dict(), "required" => []),
-    args ->
-        vscode_debug_command("workbench.action.debug.stop", "Debug session stopped")
 )
 
 # Package management tools
@@ -1648,26 +1792,42 @@ Pattern uses ReTest regex syntax to filter tests.""",
             on_progress("Spawning test subprocess for $(basename(project_path))...")
 
         # Spawn ephemeral test subprocess
-        run = spawn_test_run(
-            project_path;
-            pattern = pattern,
-            verbose = verbose,
-            on_progress = on_progress,
-        )
+        run = spawn_test_run(project_path; pattern = pattern, verbose = verbose)
 
         # Push to TUI buffer so the Tests tab picks it up
         _push_test_update!(:update, run)
 
-        # Poll for completion with inflight progress
+        # Poll for completion — timeout after 10 min to prevent hanging MCP calls
+        deadline = time() + 600.0
         while run.status == RUN_RUNNING
             sleep(0.5)
             if on_progress !== nothing
-                n_lines = length(run.raw_output)
                 on_progress(
-                    "Running tests... $(run.total_pass) passed, $(run.total_fail) failed ($n_lines lines)",
+                    "$(run.total_pass) passed, $(run.total_fail) failed",
                 )
             end
+            if time() > deadline
+                cancel_test_run!(run)
+                return "Test run timed out after 10 minutes.\n\n$(format_test_summary(run))"
+            end
         end
+
+        # The runner marks status on TEST_RUNNER:DONE before the reader task
+        # necessarily finishes parsing the final summary block.
+        reader_deadline = time() + 5.0
+        while !run.reader_done && time() < reader_deadline
+            sleep(0.05)
+        end
+
+        # If the process has exited but only summary-table output was emitted,
+        # parse the buffered raw output one last time before formatting.
+        if run.process !== nothing
+            try
+                wait(run.process)
+            catch
+            end
+        end
+        _parse_raw_summary!(run)
 
         # Return focused summary (not raw output dump)
         return format_test_summary(run)
@@ -1678,14 +1838,19 @@ stress_test_tool = @mcp_tool(
     :stress_test,
     """Run a stress test by spawning concurrent simulated MCP agents.
 
-Launches N agents that each execute the given Julia code via `ex`. Returns per-agent results, timing stats, and success/failure counts.
+Launches N agents that each execute the given Julia code via `ex`, or call an arbitrary
+MCP gate tool. Returns per-agent results, timing stats, and success/failure counts.
+
+Use the `scenario` parameter to select a pre-defined test pattern, or specify `tool`
+and `tool_args` directly for a custom gate tool call.
 
 # Examples
 
 ```julia
 {"num_agents": 3, "code": "sleep(1); 42"}
 {"num_agents": 10, "code": "sum(1:1000)", "stagger": 0.1}
-{"num_agents": 5, "code": "sleep(rand())", "timeout": 60}
+{"num_agents": 5, "tool": "gatetooltest_jl.run_timed_op", "tool_args": {"steps": 5, "delay_ms": 200}}
+{"num_agents": 5, "scenario": "timed_op (5 steps)", "session": "9b2d4532"}
 ```
 """,
     Dict(
@@ -1693,7 +1858,19 @@ Launches N agents that each execute the given Julia code via `ex`. Returns per-a
         "properties" => Dict(
             "code" => Dict(
                 "type" => "string",
-                "description" => "Julia code each agent executes (default: \"sleep(1); 42\")",
+                "description" => "Julia code each agent executes via ex (default: \"sleep(1); 42\"). Ignored when `tool` is set.",
+            ),
+            "tool" => Dict(
+                "type" => "string",
+                "description" => "MCP tool name to call instead of ex (e.g. \"gatetooltest_jl.run_timed_op\"). Omit to use eval path.",
+            ),
+            "tool_args" => Dict(
+                "type" => "object",
+                "description" => "Arguments passed to the gate tool. Used when `tool` is set.",
+            ),
+            "scenario" => Dict(
+                "type" => "string",
+                "description" => "Pre-defined scenario name. Sets `tool` and `tool_args` automatically. Run with no args to list available scenarios.",
             ),
             "num_agents" => Dict(
                 "type" => "integer",
@@ -1709,13 +1886,18 @@ Launches N agents that each execute the given Julia code via `ex`. Returns per-a
             ),
             "session" => Dict(
                 "type" => "string",
-                "description" => "Target session key (auto-detects if one session connected)",
+                "description" => "Target session key for eval path (auto-detects if one session connected). Gate tools route via namespace, not session key.",
             ),
         ),
         "required" => [],
     ),
     function (args)
         code = get(args, "code", "sleep(1); 42")
+        tool_name = get(args, "tool", "")
+        tool_args_val = get(args, "tool_args", nothing)
+        tool_args_json = tool_args_val !== nothing ? JSON.json(tool_args_val) : "{}"
+        scenario = get(args, "scenario", "")
+
         num_agents = get(args, "num_agents", 5)
         num_agents isa AbstractString && (num_agents = parse(Int, num_agents))
         stagger = get(args, "stagger", 0.0)
@@ -1726,48 +1908,82 @@ Launches N agents that each execute the given Julia code via `ex`. Returns per-a
 
         on_progress = get(args, "_on_progress", nothing)
 
+        # Resolve scenario preset
+        if !isempty(scenario)
+            idx = findfirst(s -> s.name == scenario, STRESS_SCENARIOS)
+            if idx === nothing
+                names = join([s.name for s in STRESS_SCENARIOS], "\n  ")
+                return "ERROR: Unknown scenario '$(scenario)'. Available:\n  $names"
+            end
+            sc = STRESS_SCENARIOS[idx]
+            tool_name = sc.tool
+            tool_args_json = sc.args_json
+            isempty(sc.code) || (code = sc.code)
+        end
+
+        # Default tool
+        isempty(tool_name) && (tool_name = "ex")
+
         # Validate
         num_agents = clamp(num_agents, 1, 100)
         stagger = max(0.0, stagger)
         timeout = clamp(timeout, 1, 600)
 
-        # Resolve session
+        # Resolve session (used for ex eval path and for SUMMARY label)
         mgr = GATE_CONN_MGR[]
         if mgr === nothing
             return "ERROR: No ConnectionManager available. Is the TUI running with gate mode enabled?"
         end
 
+        resolved_conn = nothing
         sess_key = if isempty(session)
             conns = connected_sessions(mgr)
             if length(conns) == 0
                 return "ERROR: No REPL sessions connected. Start a gate in your Julia REPL:\n  Gate.serve()"
             elseif length(conns) == 1
+                resolved_conn = conns[1]
                 short_key(conns[1])
             else
-                available = join(["$(short_key(c)) ($(c.name))" for c in conns], ", ")
-                return "ERROR: Multiple sessions connected. Specify `session` parameter. Available: $available"
+                # For gate tools (non-ex), session is not required — just use first
+                if tool_name != "ex"
+                    resolved_conn = conns[1]
+                    short_key(conns[1])
+                else
+                    available = join(["$(short_key(c)) ($(c.name))" for c in conns], ", ")
+                    return "ERROR: Multiple sessions connected. Specify `session` parameter. Available: $available"
+                end
             end
         else
-            # Verify the session exists
             conn = get_connection_by_key(mgr, session)
             if conn === nothing
                 conns = connected_sessions(mgr)
                 available = join(["$(short_key(c)) ($(c.name))" for c in conns], ", ")
                 return "ERROR: No session matched '$(session)'. Available: $available"
             end
+            resolved_conn = conn
             short_key(conn)
+        end
+
+        # Auto-prepend namespace for scenario/short tool names that lack a '.' prefix
+        if tool_name != "ex" && !occursin('.', tool_name) && resolved_conn !== nothing
+            ns = resolved_conn.namespace
+            isempty(ns) || (tool_name = "$(ns).$(tool_name)")
         end
 
         port = GATE_PORT[]
 
-        on_progress !== nothing && on_progress(
-            "Launching stress test: $num_agents agents, code=$(repr(code))",
-        )
+        if on_progress !== nothing
+            if tool_name == "ex"
+                on_progress("Launching stress test: $num_agents agents, code=$(repr(code))")
+            else
+                on_progress("Launching stress test: $num_agents agents, tool=$tool_name")
+            end
+        end
 
         # Write script and spawn subprocess
         script_path = _write_stress_script()
         project_dir = pkgdir(@__MODULE__)
-        cmd = `$(Base.julia_cmd()) --startup-file=no --project=$project_dir $script_path $port $sess_key $code $num_agents $stagger $timeout`
+        cmd = `$(Base.julia_cmd()) --startup-file=no --project=$project_dir $script_path $port $sess_key $code $num_agents $stagger $timeout $tool_name $tool_args_json`
 
         output_lines = String[]
         t_start = time()
@@ -1778,10 +1994,7 @@ Launches N agents that each execute the given Julia code via `ex`. Returns per-a
                 line = readline(process; keep = false)
                 isempty(line) && continue
                 push!(output_lines, line)
-                # Stream progress for each meaningful line
-                if on_progress !== nothing
-                    on_progress(line)
-                end
+                on_progress !== nothing && on_progress(line)
             end
             try
                 wait(process)
@@ -1796,7 +2009,7 @@ Launches N agents that each execute the given Julia code via `ex`. Returns per-a
         # Write results file
         result_file = _write_stress_results_to_file(
             output_lines,
-            code,
+            tool_name == "ex" ? code : tool_name,
             sess_key,
             num_agents,
             stagger,
@@ -1813,7 +2026,9 @@ Launches N agents that each execute the given Julia code via `ex`. Returns per-a
             Float64(stagger),
             timeout,
             total_wall_time,
-            result_file,
+            result_file;
+            tool_name = tool_name,
+            tool_args_json = tool_args_json,
         )
     end
 )

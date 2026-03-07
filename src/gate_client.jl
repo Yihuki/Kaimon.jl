@@ -25,7 +25,7 @@ mutable struct REPLConnection
     eval_state::Ref{EvalState}   # current eval lifecycle state
     _eval_inboxes::Dict{String,Channel{Any}}  # per-request_id channels for concurrent evals
     _eval_inboxes_lock::ReentrantLock          # protects _eval_inboxes dict
-    status::Symbol               # :connected, :disconnected, :connecting
+    status::Symbol               # :connected, :evaluating, :disconnected, :connecting, :stalled
     project_path::String
     julia_version::String
     pid::Int
@@ -256,16 +256,21 @@ function discover_sessions(mgr::ConnectionManager)
 
     new_connections = REPLConnection[]
 
-    known_ids = lock(mgr.lock) do
-        Set(c.session_id for c in mgr.connections)
+    # Map session_id → pid for sessions we already track.
+    # Used to detect when a process restarts: same session_id, new PID.
+    known_id_pids = lock(mgr.lock) do
+        Dict(c.session_id => c.pid for c in mgr.connections)
+    end
+
+    # Track (name, pid) pairs already known — skip duplicate sessions from
+    # the same process (e.g., stale socket files from a gate restart).
+    known_name_pids = lock(mgr.lock) do
+        Set((c.name, c.pid) for c in mgr.connections)
     end
 
     for f in readdir(mgr.sock_dir)
         endswith(f, ".json") || continue
         session_id = replace(f, ".json" => "")
-
-        # Skip already-known sessions
-        session_id in known_ids && continue
 
         meta = try
             JSON.parsefile(joinpath(mgr.sock_dir, f))
@@ -279,15 +284,33 @@ function discover_sessions(mgr::ConnectionManager)
             0
         end
 
+        # Skip if we already track this session with the exact same PID —
+        # nothing changed.  If the PID is different the process restarted:
+        # don't skip so the watcher can replace the stale connection.
+        if haskey(known_id_pids, session_id) && known_id_pids[session_id] == pid
+            continue
+        end
+
         # Skip and clean up sessions whose PID is no longer alive
         if !_is_pid_alive(pid)
             _remove_session_files(mgr.sock_dir, session_id)
             continue
         end
 
+        name = get(meta, "name", "julia")
+
+        # Skip duplicate sessions from the same process (same name + PID).
+        # This happens when a gate restarts within the same process, leaving
+        # a stale socket file alongside the new one.
+        if (name, pid) in known_name_pids
+            # Clean up the stale duplicate
+            _remove_session_files(mgr.sock_dir, session_id)
+            continue
+        end
+
         conn = REPLConnection(
             session_id = session_id,
-            name = get(meta, "name", "julia"),
+            name = name,
             socket_path = joinpath(mgr.sock_dir, "$(session_id).sock"),
             endpoint = get(
                 meta,
@@ -300,18 +323,32 @@ function discover_sessions(mgr::ConnectionManager)
             pid = pid,
         )
 
-        # Derive display name from project_path, deduplicating against existing
-        existing = lock(mgr.lock) do
-            [c.display_name for c in mgr.connections]
+        # If this session_id was already known (PID changed = process restarted),
+        # preserve the existing display name so the session keeps its "Foo" name
+        # instead of being assigned "Foo-2".
+        # For genuinely new sessions derive a fresh deduplicated name.
+        if haskey(known_id_pids, session_id)
+            # Restarted session — steal the old conn's display name
+            conn.display_name = lock(mgr.lock) do
+                idx = findfirst(c -> c.session_id == session_id, mgr.connections)
+                idx !== nothing ? mgr.connections[idx].display_name : ""
+            end
         end
-        # Also account for other new connections discovered in this batch
-        append!(
-            existing,
-            [c.display_name for c in new_connections if !isempty(c.display_name)],
-        )
-        conn.display_name =
-            _derive_display_name(conn.project_path, conn.julia_version, existing)
+        if isempty(conn.display_name)
+            # Derive display name from project_path, deduplicating against existing
+            existing = lock(mgr.lock) do
+                [c.display_name for c in mgr.connections]
+            end
+            # Also account for other new connections discovered in this batch
+            append!(
+                existing,
+                [c.display_name for c in new_connections if !isempty(c.display_name)],
+            )
+            conn.display_name =
+                _derive_display_name(conn.project_path, conn.julia_version, existing)
+        end
 
+        push!(known_name_pids, (name, pid))
         push!(new_connections, conn)
     end
 
@@ -335,6 +372,7 @@ function connect!(mgr::ConnectionManager, conn::REPLConnection)
                 sub = Socket(mgr.zmq_context, SUB)
                 sub.rcvtimeo = 0  # non-blocking recv
                 sub.linger = 0    # don't block on close
+                sub.rcvhwm = 0    # unlimited receive buffer — never drop messages
                 subscribe(sub, "")  # receive all messages
                 connect(sub, conn.stream_endpoint)
                 conn.sub_socket = sub
@@ -361,21 +399,23 @@ function connect!(mgr::ConnectionManager, conn::REPLConnection)
 end
 
 function disconnect!(conn::REPLConnection)
-    if conn.req_socket !== nothing
-        try
-            close(conn.req_socket)
-        catch
+    lock(conn.req_lock) do
+        if conn.req_socket !== nothing
+            try
+                close(conn.req_socket)
+            catch
+            end
+            conn.req_socket = nothing
         end
-        conn.req_socket = nothing
-    end
-    if conn.sub_socket !== nothing
-        try
-            close(conn.sub_socket)
-        catch
+        if conn.sub_socket !== nothing
+            try
+                close(conn.sub_socket)
+            catch
+            end
+            conn.sub_socket = nothing
         end
-        conn.sub_socket = nothing
+        conn.status = :disconnected
     end
-    conn.status = :disconnected
 end
 
 """
@@ -387,29 +427,37 @@ Reuses the provided ZMQ context instead of creating a new one (which
 leaked contexts and caused resource exhaustion).
 """
 function _reconnect_req!(conn::REPLConnection)
-    ctx = conn.zmq_context
-    if ctx === nothing
-        conn.req_socket = nothing
-        conn.status = :disconnected
-        return
+    lock(conn.req_lock) do
+        ctx = conn.zmq_context
+        if ctx === nothing
+            conn.req_socket = nothing
+            conn.status = :disconnected
+            return
+        end
+        old = conn.req_socket
+        try
+            old.linger = 0
+            close(old)
+        catch
+        end
+        try
+            socket = Socket(ctx, REQ)
+            socket.rcvtimeo = 5000
+            socket.sndtimeo = 2000
+            socket.linger = 0
+            connect(socket, conn.endpoint)
+            conn.req_socket = socket
+        catch
+            conn.req_socket = nothing
+            conn.status = :disconnected
+        end
     end
-    old = conn.req_socket
-    try
-        old.linger = 0
-        close(old)
-    catch
-    end
-    try
-        socket = Socket(ctx, REQ)
-        socket.rcvtimeo = 5000
-        socket.sndtimeo = 2000
-        socket.linger = 0
-        connect(socket, conn.endpoint)
-        conn.req_socket = socket
-    catch
-        conn.req_socket = nothing
-        conn.status = :disconnected
-    end
+end
+
+@inline function _require_req_socket(conn::REPLConnection)
+    sock = conn.req_socket
+    sock === nothing && error("Gate REQ socket unavailable (session=$(conn.session_id))")
+    return sock
 end
 
 # ── Eval / Communication ─────────────────────────────────────────────────────
@@ -420,7 +468,7 @@ function eval_remote(
     timeout_ms::Int = 30000,
     display_code::String = code,
 )
-    if conn.status != :connected || conn.req_socket === nothing
+    if conn.status ∉ (:connected, :evaluating) || conn.req_socket === nothing
         return (
             stdout = "",
             stderr = "",
@@ -436,10 +484,11 @@ function eval_remote(
             # Serialize and send
             io = IOBuffer()
             serialize(io, request)
-            send(conn.req_socket, Message(take!(io)))
+            sock = _require_req_socket(conn)
+            send(sock, Message(take!(io)))
 
             # Receive response
-            raw = recv(conn.req_socket)
+            raw = recv(sock)
             response = deserialize(IOBuffer(raw))
             conn.last_seen = now()
             conn.tool_call_count += 1
@@ -487,11 +536,11 @@ Returns the same NamedTuple format as `eval_remote`.
 function eval_remote_async(
     conn::REPLConnection,
     code::String;
-    timeout_ms::Int = 120000,
+    timeout_ms::Int = 600000,  # 10 min hard timeout (keepalive messages sent meanwhile)
     display_code::String = code,
     on_output::Union{Function,Nothing} = nothing,
 )
-    if conn.status != :connected || conn.req_socket === nothing
+    if conn.status ∉ (:connected, :evaluating) || conn.req_socket === nothing
         return (
             stdout = "",
             stderr = "",
@@ -516,8 +565,9 @@ function eval_remote_async(
             )
             io = IOBuffer()
             serialize(io, request)
-            send(conn.req_socket, Message(take!(io)))
-            raw = recv(conn.req_socket)
+            sock = _require_req_socket(conn)
+            send(sock, Message(take!(io)))
+            raw = recv(sock)
             response = deserialize(IOBuffer(raw))
             conn.last_seen = now()
             return response
@@ -563,16 +613,39 @@ function eval_remote_async(
     # to the correct inbox so concurrent evals don't steal each other's results.
     conn.eval_state[] = EVAL_STREAMING
 
-    # Register a per-request inbox channel
-    my_inbox = Channel{Any}(32)
+    # Register a per-request inbox channel.
+    # Use unbounded capacity so put! in drain_stream_messages! never blocks
+    # (a full Channel blocks the drain loop which holds mgr.lock, stalling the TUI).
+    my_inbox = Channel{Any}(Inf)
     lock(conn._eval_inboxes_lock) do
         conn._eval_inboxes[request_id] = my_inbox
     end
 
-    deadline = time() + timeout_ms / 1000.0
+    start_time = time()
+    last_activity = start_time  # tracks last stdout/stderr/any message
+    silence_threshold = 60.0    # send keepalive after this much silence
+    keepalive_interval = 30.0   # seconds between repeated keepalives
+    last_keepalive = 0.0
+    hard_timeout = timeout_ms / 1000.0  # safety valve
 
     try
-        while time() < deadline
+        while (time() - start_time) < hard_timeout
+            silence = time() - last_activity
+
+            # If no output for a while, send periodic keepalive progress
+            # messages so the agent knows the session is still running.
+            if on_output !== nothing && silence >= silence_threshold &&
+               (time() - last_keepalive) >= keepalive_interval
+                elapsed = time() - start_time
+                mins = round(Int, elapsed ÷ 60)
+                secs = round(Int, elapsed % 60)
+                elapsed_str = mins > 0 ? "$(mins)m $(secs)s" : "$(secs)s"
+                on_output("stderr",
+                    "⏳ Evaluation running ($elapsed_str elapsed, no output for $(round(Int, silence))s). " *
+                    "Session may be compiling, performing a long computation, or stuck.\n")
+                last_keepalive = time()
+            end
+
             # Poll the per-request inbox
             msg = if isready(my_inbox)
                 try
@@ -591,7 +664,28 @@ function eval_remote_async(
             data = get(msg, :data, "")
 
             if ch == "stdout" || ch == "stderr"
+                last_activity = time()
                 on_output !== nothing && on_output(ch, string(data))
+            elseif ch == "breakpoint_hit"
+                # The eval triggered an @infiltrate breakpoint. Parse the
+                # breakpoint info and return it as a special non-exception
+                # result so the MCP tool can inform the agent.
+                bp_info = try
+                    deserialize(IOBuffer(Vector{UInt8}(data)))
+                catch
+                    (file = "unknown", line = 0, locals = Dict(), locals_types = Dict())
+                end
+                bp_file = get(bp_info, :file, "unknown")
+                bp_line = get(bp_info, :line, 0)
+                n_locals = length(get(bp_info, :locals, Dict()))
+                conn.tool_call_count += 1
+                return (
+                    stdout = "",
+                    stderr = "",
+                    value_repr = "⏸ Execution paused at breakpoint ($bp_file:$bp_line) — $n_locals local variables captured.\nUse debug_ctrl to inspect locals, debug_eval to evaluate expressions, and debug_ctrl(action=\"continue\") to resume.",
+                    exception = nothing,
+                    backtrace = nothing,
+                )
             elseif ch == "eval_complete"
                 result = try
                     deserialize(IOBuffer(Vector{UInt8}(data)))
@@ -623,12 +717,13 @@ function eval_remote_async(
             end
         end
 
-        # Timeout
+        # Hard timeout safety valve
+        mins = round(Int, (time() - start_time) ÷ 60)
         return (
             stdout = "",
             stderr = "",
             value_repr = "",
-            exception = "Gate eval timed out after $(timeout_ms)ms (async streaming)",
+            exception = "Gate eval timed out after $(mins) minutes with no result. Unless you were anticipating that this would take considerable time, the session process may be stuck. You can use manage_repl to restart it.",
             backtrace = nothing,
         )
     catch e
@@ -652,7 +747,7 @@ function eval_remote_async(
 end
 
 function get_remote_options(conn::REPLConnection)
-    if conn.status != :connected || conn.req_socket === nothing
+    if conn.status ∉ (:connected, :evaluating) || conn.req_socket === nothing
         return nothing
     end
     lock(conn.req_lock) do
@@ -660,8 +755,9 @@ function get_remote_options(conn::REPLConnection)
         try
             io = IOBuffer()
             serialize(io, req)
-            send(conn.req_socket, Message(take!(io)))
-            raw = recv(conn.req_socket)
+            sock = _require_req_socket(conn)
+            send(sock, Message(take!(io)))
+            raw = recv(sock)
             response = deserialize(IOBuffer(raw))
             conn.last_seen = now()
             return response
@@ -677,7 +773,7 @@ function get_remote_options(conn::REPLConnection)
 end
 
 function set_mirror_repl!(conn::REPLConnection, enabled::Bool)
-    if conn.status != :connected || conn.req_socket === nothing
+    if conn.status ∉ (:connected, :evaluating) || conn.req_socket === nothing
         return false
     end
     lock(conn.req_lock) do
@@ -685,8 +781,9 @@ function set_mirror_repl!(conn::REPLConnection, enabled::Bool)
         try
             io = IOBuffer()
             serialize(io, req)
-            send(conn.req_socket, Message(take!(io)))
-            raw = recv(conn.req_socket)
+            sock = _require_req_socket(conn)
+            send(sock, Message(take!(io)))
+            raw = recv(sock)
             response = deserialize(IOBuffer(raw))
             conn.last_seen = now()
             return get(response, :type, :error) == :ok
@@ -709,14 +806,15 @@ remote shell via SIGSTOP, and disabling echo. Returns `true` on success.
 Call `restore_tty!()` after the TUI exits to resume the shell and restore echo.
 """
 function set_tty!(conn::REPLConnection, path::String)
-    conn.status == :connected && conn.req_socket !== nothing || return false
+    conn.status in (:connected, :evaluating) && conn.req_socket !== nothing || return false
     lock(conn.req_lock) do
         req = (type = :set_tty, path = path)
         try
             io = IOBuffer()
             serialize(io, req)
-            send(conn.req_socket, Message(take!(io)))
-            raw = recv(conn.req_socket)
+            sock = _require_req_socket(conn)
+            send(sock, Message(take!(io)))
+            raw = recv(sock)
             response = deserialize(IOBuffer(raw))
             conn.last_seen = now()
             return get(response, :type, :error) == :ok
@@ -731,40 +829,40 @@ function set_tty!(conn::REPLConnection, path::String)
     end
 end
 
-function ping(conn::REPLConnection; skip_if_busy::Bool = false)
-    # When called from health check, skip if an eval is in progress —
-    # the REQ socket is either locked or the gate is busy.
-    # Check this BEFORE the socket check so it works even when the socket
-    # is temporarily nil during reconnect.
-    if skip_if_busy && conn.eval_state[] != EVAL_IDLE
-        return (type = :pong, skipped = true)  # synthetic pong to avoid disconnect
-    end
-    if conn.status != :connected || conn.req_socket === nothing
+function ping(conn::REPLConnection)
+    if conn.status ∉ (:connected, :stalled) || conn.req_socket === nothing
         return nothing
     end
 
-    lock(conn.req_lock) do
-        try
-            io = IOBuffer()
-            serialize(io, (type = :ping,))
-            send(conn.req_socket, Message(take!(io)))
+    # Use trylock so we don't block the health checker during long evals.
+    # If the lock is held (eval in progress), return :busy so the caller
+    # can check PID liveness directly.
+    acquired = trylock(conn.req_lock)
+    acquired || return :busy
+    try
+        io = IOBuffer()
+        serialize(io, (type = :ping,))
+        sock = _require_req_socket(conn)
+        send(sock, Message(take!(io)))
 
-            raw = recv(conn.req_socket)
-            response = deserialize(IOBuffer(raw))
-            conn.last_seen = now()
-            conn.last_ping = now()
-            return response
-        catch e
-            if e isa ZMQ.TimeoutError
-                # REQ socket is poisoned after timeout — must reconnect
-                _reconnect_req!(conn)
-            else
-                conn.status = :disconnected
-            end
-            return nothing
+        raw = recv(sock)
+        response = deserialize(IOBuffer(raw))
+        conn.last_seen = now()
+        conn.last_ping = now()
+        return response
+    catch e
+        if e isa ZMQ.TimeoutError
+            # REQ socket is poisoned after timeout — must reconnect
+            _reconnect_req!(conn)
+        else
+            conn.status = :disconnected
         end
+        return nothing
+    finally
+        unlock(conn.req_lock)
     end
 end
+
 
 """
     send_restart!(conn::REPLConnection) -> Bool
@@ -773,13 +871,14 @@ Send a `:restart` command to the gate. Returns `true` if the gate acknowledged.
 The gate will exec a fresh Julia process after replying.
 """
 function send_restart!(conn::REPLConnection)
-    (conn.status != :connected || conn.req_socket === nothing) && return false
+    (conn.status ∉ (:connected, :evaluating) || conn.req_socket === nothing) && return false
     lock(conn.req_lock) do
         try
             io = IOBuffer()
             serialize(io, (type = :restart, name = conn.name))
-            send(conn.req_socket, Message(take!(io)))
-            raw = recv(conn.req_socket)
+            sock = _require_req_socket(conn)
+            send(sock, Message(take!(io)))
+            raw = recv(sock)
             response = deserialize(IOBuffer(raw))
             conn.last_seen = now()
             return get(response, :type, :error) == :ok
@@ -790,6 +889,39 @@ function send_restart!(conn::REPLConnection)
                 conn.status = :disconnected
             end
             return false
+        end
+    end
+end
+
+# ── Debug Protocol ──────────────────────────────────────────────────────────
+
+"""
+    _gate_send_recv(conn::REPLConnection, request::NamedTuple) -> NamedTuple
+
+Send a request to the gate and wait for a response. Lightweight wrapper for
+non-eval protocol messages (debug_status, debug_eval, debug_continue).
+"""
+function _gate_send_recv(conn::REPLConnection, request::NamedTuple)
+    if conn.status ∉ (:connected, :evaluating) || conn.req_socket === nothing
+        return (type = :error, message = "Gate not connected (status=$(conn.status))")
+    end
+    lock(conn.req_lock) do
+        try
+            io = IOBuffer()
+            serialize(io, request)
+            sock = _require_req_socket(conn)
+            send(sock, Message(take!(io)))
+            raw = recv(sock)
+            response = deserialize(IOBuffer(raw))
+            conn.last_seen = now()
+            return response
+        catch e
+            if e isa ZMQ.TimeoutError
+                _reconnect_req!(conn)
+                return (type = :error, message = "Gate request timed out")
+            end
+            conn.status = :disconnected
+            return (type = :error, message = "Connection error: $e")
         end
     end
 end
@@ -805,8 +937,12 @@ function drain_stream_messages!(mgr::ConnectionManager)
     lock(mgr.lock) do
         for conn in mgr.connections
             conn.sub_socket === nothing && continue
-            # Drain all pending messages (non-blocking due to rcvtimeo=0)
-            while true
+            # Drain pending messages (non-blocking, capped per call).
+            # The cap prevents holding mgr.lock too long when the gate produces
+            # a burst of stdout — any remainder is picked up on the next render frame.
+            n_drained = 0
+            while n_drained < 500
+                n_drained += 1
                 raw = try
                     recv(conn.sub_socket)
                 catch
@@ -850,11 +986,12 @@ function drain_stream_messages!(mgr::ConnectionManager)
                     push!(messages, (channel = ch, data = data, session_name = dname))
                 end
 
-                # Forward stdout/stderr to all active inboxes during streaming
-                # so on_output callbacks (SSE progress) can see them.
-                # stdout/stderr aren't tagged with request_id (they come from
-                # the REPL's stdout/stderr which is shared), so broadcast to all.
-                if ch in ("stdout", "stderr") && conn.eval_state[] == EVAL_STREAMING
+                # Forward stdout/stderr/breakpoint_hit to all active inboxes during
+                # streaming so on_output callbacks (SSE progress) can see them.
+                # These aren't tagged with request_id (they come from the REPL's
+                # shared stdout/stderr, or from _breakpoint_hook which doesn't
+                # know which eval triggered it), so broadcast to all.
+                if ch in ("stdout", "stderr", "breakpoint_hit") && conn.eval_state[] == EVAL_STREAMING
                     lock(conn._eval_inboxes_lock) do
                         for (_, inbox) in conn._eval_inboxes
                             try
@@ -885,7 +1022,24 @@ function start!(mgr::ConnectionManager)
                 for conn in new_conns
                     if connect!(mgr, conn)
                         lock(mgr.lock) do
-                            push!(mgr.connections, conn)
+                            # If a stale connection for the same session_id exists
+                            # (process restarted before the TUI cleaned it up),
+                            # replace it in-place so we don't accumulate duplicates
+                            # and the display name slot is freed atomically.
+                            old_idx = findfirst(
+                                c -> c.session_id == conn.session_id,
+                                mgr.connections,
+                            )
+                            if old_idx !== nothing
+                                old_conn = mgr.connections[old_idx]
+                                _unregister_session_tools!(old_conn)
+                                disconnect!(old_conn)
+                                mgr.connections[old_idx] = conn
+                                @debug "Replaced restarted gate connection" display_name =
+                                    conn.display_name session_id = conn.session_id
+                            else
+                                push!(mgr.connections, conn)
+                            end
                         end
                         added = true
                         @debug "Connected to gate" name = conn.name display_name =
@@ -913,9 +1067,24 @@ function start!(mgr::ConnectionManager)
 
                 to_remove = REPLConnection[]
                 for conn in conns
-                    if conn.status == :connected
-                        result = ping(conn; skip_if_busy = true)
-                        if result !== nothing
+                    if conn.status in (:connected, :evaluating, :stalled)
+                        result = ping(conn)
+                        if result === :busy
+                            # Socket locked (eval in progress) — check PID
+                            if !_is_pid_alive(conn.pid)
+                                @debug "Gate process dead (busy socket), removing session" name = conn.name pid = conn.pid
+                                disconnect!(conn)
+                                push!(to_remove, conn)
+                            elseif conn.status != :evaluating
+                                conn.status = :evaluating
+                                _fire_sessions_changed(mgr)
+                            end
+                        elseif result !== nothing
+                            # Successful pong — session is idle and responsive
+                            if conn.status != :connected
+                                conn.status = :connected
+                                _fire_sessions_changed(mgr)
+                            end
                             # Update project_path from live pong data
                             new_path = get(result, :project_path, "")
                             if !isempty(new_path) && new_path != conn.project_path
@@ -954,9 +1123,19 @@ function start!(mgr::ConnectionManager)
                             conn.allow_mirror = Bool(get(result, :allow_mirror, true))
                             conn.mirror_repl = Bool(get(result, :mirror_repl, false))
                         else
-                            @debug "Gate unresponsive, disconnecting" name = conn.name
-                            disconnect!(conn)
-                            if !isfile(conn.socket_path)
+                            # Check if the gate process is still alive.
+                            # If it is, this is likely a GC pause or CPU stall —
+                            # mark as stalled so the user sees why it's unresponsive.
+                            # If the PID is gone, disconnect immediately.
+                            if _is_pid_alive(conn.pid)
+                                @debug "Gate ping failed but process alive (GC pause?), marking stalled" name = conn.name pid = conn.pid
+                                if conn.status != :stalled
+                                    conn.status = :stalled
+                                    _fire_sessions_changed(mgr)
+                                end
+                            else
+                                @debug "Gate process dead, removing session" name = conn.name pid = conn.pid
+                                disconnect!(conn)
                                 push!(to_remove, conn)
                             end
                         end
@@ -1051,7 +1230,7 @@ Get the first connected REPL, or nothing if none available.
 function get_default_connection(mgr::ConnectionManager)
     lock(mgr.lock) do
         for conn in mgr.connections
-            if conn.status == :connected
+            if conn.status in (:connected, :evaluating)
                 return conn
             end
         end
@@ -1066,18 +1245,19 @@ List all currently connected sessions.
 """
 function connected_sessions(mgr::ConnectionManager)
     lock(mgr.lock) do
-        filter(c -> c.status == :connected, mgr.connections)
+        filter(c -> c.status in (:connected, :evaluating, :stalled), mgr.connections)
     end
 end
 
 """First 8 chars of the session UUID — short, unique, token-efficient."""
 short_key(conn::REPLConnection) = first(conn.session_id, 8)
 
-"""Look up a connection by its 8-char short key. Returns nothing if not found."""
+"""Look up a connection by its 8-char short key. Returns nothing if not found.
+Includes stalled sessions so tools can still interact with them."""
 function get_connection_by_key(mgr::ConnectionManager, key::String)
     lock(mgr.lock) do
         for conn in mgr.connections
-            if conn.status == :connected && startswith(conn.session_id, key)
+            if conn.status in (:connected, :evaluating, :stalled) && startswith(conn.session_id, key)
                 return conn
             end
         end
@@ -1180,7 +1360,7 @@ Send a `:tool_call` message through the gate's ZMQ REQ socket and return
 the result as a string.
 """
 function _call_session_tool(conn::REPLConnection, tool_name::String, args::Dict)
-    if conn.status != :connected || conn.req_socket === nothing
+    if conn.status ∉ (:connected, :evaluating) || conn.req_socket === nothing
         return "Error: Gate not connected (session=$(conn.session_id))"
     end
 
@@ -1193,8 +1373,9 @@ function _call_session_tool(conn::REPLConnection, tool_name::String, args::Dict)
             )
             io = IOBuffer()
             Serialization.serialize(io, request)
-            send(conn.req_socket, Message(take!(io)))
-            raw = recv(conn.req_socket)
+            sock = _require_req_socket(conn)
+            send(sock, Message(take!(io)))
+            raw = recv(sock)
             response = Serialization.deserialize(IOBuffer(raw))
             conn.last_seen = now()
             resp_type = get(response, :type, :error)
@@ -1235,7 +1416,7 @@ function _call_session_tool_async(
     timeout_ms::Int = 300_000,
     on_progress::Union{Function,Nothing} = nothing,
 )
-    if conn.status != :connected || conn.req_socket === nothing
+    if conn.status ∉ (:connected, :evaluating) || conn.req_socket === nothing
         return "Error: Gate not connected (session=$(conn.session_id))"
     end
 
@@ -1253,8 +1434,9 @@ function _call_session_tool_async(
             )
             io = IOBuffer()
             Serialization.serialize(io, request)
-            send(conn.req_socket, Message(take!(io)))
-            raw = recv(conn.req_socket)
+            sock = _require_req_socket(conn)
+            send(sock, Message(take!(io)))
+            raw = recv(sock)
             response = Serialization.deserialize(IOBuffer(raw))
             conn.last_seen = now()
             return response
@@ -1282,7 +1464,8 @@ function _call_session_tool_async(
 
     # Phase 2: Wait for tool_complete/tool_error on a per-request inbox channel.
     # The drain loop reads the SUB socket and routes messages by request_id.
-    my_inbox = Channel{Any}(32)
+    # Use unbounded capacity so put! in drain_stream_messages! never blocks.
+    my_inbox = Channel{Any}(Inf)
     lock(conn._eval_inboxes_lock) do
         conn._eval_inboxes[request_id] = my_inbox
     end
@@ -1360,7 +1543,8 @@ function _create_session_tools(conn::REPLConnection)::Vector{MCPTool}
             end
         end
 
-        push!(tools, MCPTool(tool_id, tool_name, description, schema, handler))
+        tool_title = get(tool_meta, "title", join(titlecase.(split(raw_name, "_")), " "))
+        push!(tools, MCPTool(tool_id, tool_name, tool_title, description, schema, handler))
     end
 
     return tools
@@ -1381,7 +1565,7 @@ function _resolve_namespace!(conn::REPLConnection, mgr::ConnectionManager)
     taken = lock(mgr.lock) do
         Set(
             c.namespace for c in mgr.connections if
-            c !== conn && c.status == :connected && !isempty(c.namespace)
+            c !== conn && c.status in (:connected, :evaluating) && !isempty(c.namespace)
         )
     end
 

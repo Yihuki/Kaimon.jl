@@ -300,6 +300,50 @@ function create_tools(model)
         return summary
     end
 
+    """
+        record_metrics(; count, ratio, label, priority) -> String
+
+    Record metrics with typed kwargs. Used to test kwarg type coercion through
+    _dispatch_tool_call — MCP JSON transport delivers all values as strings.
+
+    Exercises: kwarg String→Int, String→Float64, String→String, String→Enum coercion.
+    """
+    function record_metrics(;
+        count::Int,
+        ratio::Float64,
+        label::String = "default",
+        priority::Priority = low,
+    )
+        push!(model.event_log, "Metrics: count=$count ratio=$ratio label=$label priority=$priority")
+        return "recorded count=$count ratio=$ratio label=$label priority=$priority"
+    end
+
+    """
+        coerce_test(id, score, name, status, active, sym; multiplier, threshold, tag, priority, enabled, key) -> String
+
+    Round-trip coercion test covering all scalar coercion types in both positional args and kwargs.
+
+    Exercises: Int, Float64, String, Enum, Bool, Symbol — all sent as strings by MCP transport.
+    """
+    function coerce_test(
+        id::Int,
+        score::Float64,
+        name::String,
+        status::TodoStatus,
+        active::Bool,
+        sym::Symbol;
+        multiplier::Int = 1,
+        threshold::Float64 = 0.5,
+        tag::String = "none",
+        priority::Priority = low,
+        enabled::Bool = false,
+        key::Symbol = :default,
+    )
+        push!(model.event_log, "coerce_test called")
+        return "id=$id score=$score name=$name status=$status active=$active sym=$sym " *
+               "multiplier=$multiplier threshold=$threshold tag=$tag priority=$priority enabled=$enabled key=$key"
+    end
+
     # ── Registry ───────────────────────────────────────────────────────────────
 
     return GateTool[
@@ -315,6 +359,8 @@ function create_tools(model)
         GateTool("slow_task", slow_task),
         GateTool("run_timed_op", run_timed_op),
         GateTool("analyze_board", analyze_board),
+        GateTool("record_metrics", record_metrics),
+        GateTool("coerce_test", coerce_test),
     ]
 end
 

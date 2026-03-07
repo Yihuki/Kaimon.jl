@@ -1,3 +1,222 @@
+"""Dispatch to the correct modal renderer based on m.stress_modal."""
+function _view_stress_modal(m::KaimonModel, area::Rect, buf::Buffer)
+    # Modal dimensions: centered, at most 70 wide and 80% of the area height
+    mw = clamp(area.width - 6, 30, 70)
+    mx = area.x + (area.width - mw) ÷ 2
+    max_h = area.height
+
+    @match m.stress_modal begin
+        :scenario => _view_scenario_modal(m, mx, area.y, mw, max_h, buf)
+        :session  => _view_session_modal(m, mx, area.y, mw, max_h, buf)
+        :tool     => _view_tool_modal(m, mx, area.y, mw, max_h, buf)
+        _ => nothing
+    end
+end
+
+"""Render the scenario picker modal."""
+function _view_scenario_modal(m::KaimonModel, mx, base_y, mw, max_h, buf::Buffer)
+    # Items: "Custom" + each STRESS_SCENARIOS
+    n_items = length(STRESS_SCENARIOS) + 1
+    # Compute modal height: border(2) + items (capped) + hint(1)
+    visible_items = min(n_items, max_h - 4)
+    modal_h = visible_items + 3  # 2 border + 1 hint
+    my = base_y + (max_h - modal_h) ÷ 2
+
+    block = Block(
+        title = "Select Scenario",
+        border_style = tstyle(:accent, bold = true),
+        title_style = tstyle(:accent, bold = true),
+    )
+    modal_area = Rect(mx, my, mw, modal_h)
+    inner = render(block, modal_area, buf)
+
+    for row = inner.y:bottom(inner)
+        for col = inner.x:right(inner)
+            set_char!(buf, col, row, ' ', Style())
+        end
+    end
+
+    # Keep scroll sane
+    sel = m.stress_modal_sel
+    scroll = clamp(m.stress_modal_scroll, max(0, sel - visible_items), max(0, sel - 1))
+    m.stress_modal_scroll = scroll
+
+    content_h = max(0, inner.height - 1)  # last row reserved for hint
+    for i = 1:content_h
+        item_idx = i + scroll
+        item_idx > n_items && break
+        y = inner.y + i - 1
+        is_sel = item_idx == sel
+
+        if item_idx == 1
+            name = "Custom"
+            desc = "manually specify tool, args, and code"
+        else
+            sc = STRESS_SCENARIOS[item_idx - 1]
+            name = sc.name
+            desc = sc.description
+        end
+
+        prefix = is_sel ? "▸ " : "  "
+        name_style = is_sel ? tstyle(:accent, bold = true) : tstyle(:text)
+        name_w = min(length(name), mw ÷ 3)
+        set_string!(buf, inner.x, y, prefix * first(name, inner.width - 2), name_style)
+        # Description to the right if space allows
+        desc_x = inner.x + 2 + name_w + 2
+        if !isempty(desc) && desc_x + 6 <= right(inner)
+            set_string!(
+                buf, desc_x, y,
+                first("— " * desc, right(inner) - desc_x + 1),
+                tstyle(:text_dim),
+            )
+        end
+    end
+
+    # Scroll indicator
+    if n_items > visible_items
+        ind = " [$scroll/$(n_items - visible_items)] "
+        set_string!(buf, inner.x + inner.width - length(ind) - 1, inner.y - 1, ind, tstyle(:text_dim))
+    end
+
+    # Hint
+    hint_y = bottom(inner)
+    set_string!(
+        buf, inner.x + 1, hint_y,
+        "[↑↓] navigate  [Enter] select  [Esc] cancel",
+        tstyle(:text_dim),
+    )
+end
+
+"""Render the session picker modal."""
+function _view_session_modal(m::KaimonModel, mx, base_y, mw, max_h, buf::Buffer)
+    sessions = m.conn_mgr !== nothing ? connected_sessions(m.conn_mgr) : []
+    n_items = length(sessions)
+    if n_items == 0
+        return
+    end
+
+    visible_items = min(n_items, max_h - 4)
+    modal_h = visible_items + 3
+    my = base_y + (max_h - modal_h) ÷ 2
+
+    block = Block(
+        title = "Select Session",
+        border_style = tstyle(:accent, bold = true),
+        title_style = tstyle(:accent, bold = true),
+    )
+    modal_area = Rect(mx, my, mw, modal_h)
+    inner = render(block, modal_area, buf)
+
+    for row = inner.y:bottom(inner)
+        for col = inner.x:right(inner)
+            set_char!(buf, col, row, ' ', Style())
+        end
+    end
+
+    sel = m.stress_modal_sel
+    scroll = clamp(m.stress_modal_scroll, max(0, sel - visible_items), max(0, sel - 1))
+    m.stress_modal_scroll = scroll
+
+    content_h = max(0, inner.height - 1)
+    for i = 1:content_h
+        item_idx = i + scroll
+        item_idx > n_items && break
+        y = inner.y + i - 1
+        is_sel = item_idx == sel
+        sess = sessions[item_idx]
+
+        prefix = is_sel ? "▸ " : "  "
+        name_style = is_sel ? tstyle(:accent, bold = true) : tstyle(:text)
+        ns_style = tstyle(:text_dim)
+        label = sess.name
+        ns = sess.namespace
+        set_string!(buf, inner.x, y, prefix * first(label, inner.width - 2), name_style)
+        if !isempty(ns)
+            ns_x = inner.x + 2 + length(label) + 2
+            if ns_x + 4 <= right(inner)
+                set_string!(buf, ns_x, y, first("[$ns]", right(inner) - ns_x + 1), ns_style)
+            end
+        end
+    end
+
+    hint_y = bottom(inner)
+    set_string!(
+        buf, inner.x + 1, hint_y,
+        "[↑↓] navigate  [Enter] select  [Esc] cancel",
+        tstyle(:text_dim),
+    )
+end
+
+"""Render the tool configuration modal (name + args JSON)."""
+function _view_tool_modal(m::KaimonModel, mx, base_y, mw, max_h, buf::Buffer)
+    modal_h = 8
+    my = base_y + (max_h - modal_h) ÷ 2
+
+    block = Block(
+        title = "Configure Tool",
+        border_style = tstyle(:accent, bold = true),
+        title_style = tstyle(:accent, bold = true),
+    )
+    modal_area = Rect(mx, my, mw, modal_h)
+    inner = render(block, modal_area, buf)
+
+    for row = inner.y:bottom(inner)
+        for col = inner.x:right(inner)
+            set_char!(buf, col, row, ' ', Style())
+        end
+    end
+
+    x = inner.x
+    iw = inner.width
+    is_name_active = m.stress_modal_tool_field == 1
+    is_args_active = m.stress_modal_tool_field == 2
+
+    # ── Name field (TextInput) ──
+    y = inner.y + 1
+    name_inp = m.stress_tool_name_input
+    if name_inp !== nothing
+        is_name_active && (name_inp.tick = m.tick)
+        row_style = is_name_active ? tstyle(:accent, bold = true) : tstyle(:text_dim)
+        # Draw field label row header
+        set_string!(buf, x, y - 1, is_name_active ? "▸ Tool name" : "  Tool name", row_style)
+        render(name_inp, Rect(x + 2, y, max(1, iw - 2), 1), buf)
+    end
+
+    # ── Name hint ──
+    y += 1
+    set_string!(
+        buf, x + 2, y,
+        first("empty = eval path (runs Julia code)", max(0, iw - 3)),
+        tstyle(:text_dim),
+    )
+
+    # ── Args field (TextInput) ──
+    y += 2
+    args_inp = m.stress_tool_args_input
+    if args_inp !== nothing
+        is_args_active && (args_inp.tick = m.tick)
+        row_style = is_args_active ? tstyle(:accent, bold = true) : tstyle(:text_dim)
+        set_string!(buf, x, y - 1, is_args_active ? "▸ Arguments" : "  Arguments", row_style)
+        render(args_inp, Rect(x + 2, y, max(1, iw - 2), 1), buf)
+    end
+
+    # ── Args hint ──
+    y += 1
+    set_string!(
+        buf, x + 2, y,
+        first("JSON object, e.g. {\"duration_secs\": 10}", max(0, iw - 3)),
+        tstyle(:text_dim),
+    )
+
+    # ── Bottom hint ──
+    hint_y = bottom(inner)
+    set_string!(
+        buf, x + 1, hint_y,
+        "[Tab/↑↓] switch field  [Enter] next/confirm  [Esc] close",
+        tstyle(:text_dim),
+    )
+end
+
 """Render the code editor overlay (TextArea in a bordered panel)."""
 function _view_stress_code_editor(m::KaimonModel, area::Rect, buf::Buffer)
     ce = m.stress_code_area
@@ -26,7 +245,7 @@ function _view_stress_code_editor(m::KaimonModel, area::Rect, buf::Buffer)
             Rect(area.x + 1, area.y + 1, max(0, area.width - 2), max(0, area.height - 2))
     else
         block = Block(
-            title = " Code Editor ",
+            title = "Code Editor",
             border_style = tstyle(:accent, bold = true),
             title_style = tstyle(:accent, bold = true),
             box = BOX_HEAVY,
@@ -68,7 +287,7 @@ end
 
 """Render the stress test output pane with live agent visualization."""
 function _view_stress_output(m::KaimonModel, area::Rect, buf::Buffer)
-    fp = get(m.focused_pane, 5, 1)
+    fp = get(m.focused_pane, 7, 1)
     horde_focused = fp == 2
     log_focused = fp == 3
 
@@ -101,14 +320,14 @@ function _view_stress_log(m::KaimonModel, area::Rect, buf::Buffer, focused::Bool
     # Build title
     title = if m.stress_state == STRESS_RUNNING
         si = mod1(m.tick ÷ 2, length(SPINNER_BRAILLE))
-        " $(SPINNER_BRAILLE[si]) Output "
+        "$(SPINNER_BRAILLE[si]) Output"
     elseif m.stress_state == STRESS_COMPLETE
-        result_hint = isempty(m.stress_result_file) ? "" : " saved "
-        " Output (complete$result_hint) "
+        result_hint = isempty(m.stress_result_file) ? "" : " saved"
+        "Output (complete$result_hint)"
     elseif m.stress_state == STRESS_ERROR
-        " Output (error) "
+        "Output (error)"
     else
-        " Output "
+        "Output"
     end
 
     # Ensure scroll pane exists
@@ -140,6 +359,7 @@ function _view_agent_horde(
     focused::Bool = false,
 )
     n = length(agents)
+    m._stress_horde_area = area
     n == 0 && return
 
     is_running = m.stress_state == STRESS_RUNNING
@@ -215,7 +435,7 @@ function _view_agent_horde(
             Rect(area.x + 1, area.y + 1, max(0, area.width - 2), max(0, area.height - 2))
     else
         block = Block(
-            title = " Agent Horde$scroll_hint ",
+            title = "Agent Horde$scroll_hint",
             border_style = focused ? tstyle(:accent) : tstyle(:border),
             title_style = focused ? tstyle(:accent, bold = true) : tstyle(:text_dim),
         )
@@ -423,7 +643,7 @@ function _view_agent_horde(
                 sparkline = Sparkline(
                     times;
                     block = Block(
-                        title = " Response Times ",
+                        title = "Response Times",
                         border_style = tstyle(:border),
                         title_style = tstyle(:text_dim),
                     ),

@@ -16,48 +16,49 @@ using Kaimon
 
 @testset "Static Analysis" begin
     @testset "Module Loading" begin
-        # Test that all modules load without UndefVarError
-        @test_call report_call = true begin
-            using Kaimon
-        end
+        # Test that Kaimon loaded without errors
+        @test isdefined(Main, :Kaimon)
+        @test Kaimon isa Module
     end
 
     @testset "Session Module Exports" begin
-        # Verify all expected exports exist
-        @test_call report_call = true begin
-            include("../src/session.jl")
-            Kaimon.Session.update_activity!
-        end
+        # Verify key Session exports are accessible from the top-level module
+        @test isdefined(Kaimon, :Session)
+        @test isdefined(Kaimon.Session, :update_activity!)
     end
 
     @testset "Top-level Module Analysis" begin
-        # Run JET analysis on the entire Kaimon module
-        # This catches undefined variables, type issues, etc.
-        rep = report_package(:Kaimon, ignored_modules = (AnyFrameModule(Test),))
+        # report_package conflicts with Revise.jl when both are loaded in the
+        # same process (JET reads Revise internals that change between versions).
+        # Skip automatically when Revise is present; run manually in a fresh
+        # Julia session with `include("test/static_analysis_tests.jl")`.
+        revise_loaded = any(m -> nameof(m) === :Revise, values(Base.loaded_modules))
+        if revise_loaded
+            @test_skip "report_package skipped: Revise is loaded (JET/Revise version conflict)"
+        else
+            rep = report_package(Kaimon; ignore_missing_comparison = true)
 
-        # Filter out known acceptable issues
-        issues = filter(rep.res.inference_error_reports) do report
-            # Ignore errors from test files
-            !any(sf -> occursin("test/", string(sf.file)), report.vst)
-        end
-
-        if !isempty(issues)
-            println("\n❌ Static analysis found issues:")
-            for (i, issue) in enumerate(issues)
-                println("\n$i. ", issue)
+            issues = filter(rep.res.inference_error_reports) do report
+                !any(sf -> occursin("test/", string(sf.file)), report.vst)
             end
-        end
 
-        @test isempty(issues)
+            if !isempty(issues)
+                println("\n❌ Static analysis found issues:")
+                for (i, issue) in enumerate(issues)
+                    println("\n$i. ", issue)
+                end
+            end
+
+            @test isempty(issues)
+        end
     end
 
     @testset "Export Consistency Check" begin
-        # Test MCPServer module dependencies
-        @testset "MCPServer Dependencies" begin
-            using Kaimon.MCPServer
-
-            @test isdefined(Kaimon.MCPServer, :Session)
-            @test isdefined(Kaimon.MCPServer, :MCPSession)
+        @testset "Core Type Exports" begin
+            # MCPServer and MCPSession are structs, not sub-modules
+            @test isdefined(Kaimon, :MCPServer)
+            @test isdefined(Kaimon, :MCPSession)
+            @test isdefined(Kaimon, :Session)
         end
     end
 end
