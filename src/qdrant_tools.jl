@@ -737,6 +737,214 @@ qdrant_reindex_file_tool = @mcp_tool(
 )
 
 # ============================================================================
+# Low-Level Tools (for extensions calling via Gate.call_tool)
+# ============================================================================
+
+qdrant_collection_exists_tool = @mcp_tool(
+    :qdrant_collection_exists,
+    "Check whether a Qdrant collection exists. Returns true/false.",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "collection" =>
+                Dict("type" => "string", "description" => "Name of the collection to check"),
+        ),
+        "required" => ["collection"],
+    ),
+    function (args)
+        err = _require_services()
+        err !== nothing && return err
+
+        collection = get(args, "collection", "")
+        isempty(collection) && return "Error: collection name is required"
+
+        return QdrantClient.collection_exists(collection)
+    end
+)
+
+qdrant_create_collection_tool = @mcp_tool(
+    :qdrant_create_collection,
+    "Create a new Qdrant collection with specified vector configuration.",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "collection" =>
+                Dict("type" => "string", "description" => "Name of the collection to create"),
+            "vector_size" => Dict(
+                "type" => "integer",
+                "description" => "Dimension of vectors (default: 768)",
+            ),
+            "distance" => Dict(
+                "type" => "string",
+                "description" => "Distance metric: Cosine, Euclid, or Dot (default: Cosine)",
+            ),
+        ),
+        "required" => ["collection"],
+    ),
+    function (args)
+        err = _require_services()
+        err !== nothing && return err
+
+        collection = get(args, "collection", "")
+        isempty(collection) && return "Error: collection name is required"
+        vector_size = Int(get(args, "vector_size", 768))
+        distance = get(args, "distance", "Cosine")
+
+        ok = QdrantClient.create_collection(collection; vector_size = vector_size, distance = distance)
+        return ok ? "Created collection '$collection' (dim=$vector_size, distance=$distance)" :
+               "Error: failed to create collection '$collection'"
+    end
+)
+
+qdrant_delete_collection_tool = @mcp_tool(
+    :qdrant_delete_collection,
+    "Delete a Qdrant collection.",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "collection" =>
+                Dict("type" => "string", "description" => "Name of the collection to delete"),
+        ),
+        "required" => ["collection"],
+    ),
+    function (args)
+        err = _require_services()
+        err !== nothing && return err
+
+        collection = get(args, "collection", "")
+        isempty(collection) && return "Error: collection name is required"
+
+        ok = QdrantClient.delete_collection(collection)
+        return ok ? "Deleted collection '$collection'" : "Collection '$collection' not found or already deleted"
+    end
+)
+
+qdrant_upsert_points_tool = @mcp_tool(
+    :qdrant_upsert_points,
+    "Upsert points (vectors with payloads) into a Qdrant collection.",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "collection" =>
+                Dict("type" => "string", "description" => "Name of the collection"),
+            "points" => Dict(
+                "type" => "array",
+                "description" => "Array of point dicts with 'id', 'vector', and 'payload' keys",
+                "items" => Dict("type" => "object"),
+            ),
+        ),
+        "required" => ["collection", "points"],
+    ),
+    function (args)
+        err = _require_services()
+        err !== nothing && return err
+
+        collection = get(args, "collection", "")
+        isempty(collection) && return "Error: collection name is required"
+        points = get(args, "points", Dict[])
+        isempty(points) && return "Error: points array is empty"
+
+        points_vec = Vector{Dict}(points)
+        ok = QdrantClient.upsert_points(collection, points_vec)
+        return ok ? "Upserted $(length(points_vec)) points into '$collection'" :
+               "Error: upsert failed for '$collection'"
+    end
+)
+
+qdrant_delete_points_tool = @mcp_tool(
+    :qdrant_delete_points,
+    "Delete specific points by ID from a Qdrant collection.",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "collection" =>
+                Dict("type" => "string", "description" => "Name of the collection"),
+            "point_ids" => Dict(
+                "type" => "array",
+                "description" => "Array of point ID strings to delete",
+                "items" => Dict("type" => "string"),
+            ),
+        ),
+        "required" => ["collection", "point_ids"],
+    ),
+    function (args)
+        err = _require_services()
+        err !== nothing && return err
+
+        collection = get(args, "collection", "")
+        isempty(collection) && return "Error: collection name is required"
+        point_ids = Vector{String}(get(args, "point_ids", String[]))
+        isempty(point_ids) && return "No point IDs to delete"
+
+        ok = QdrantClient.delete_points(collection, point_ids)
+        return ok ? "Deleted $(length(point_ids)) points from '$collection'" :
+               "Error: delete failed for '$collection'"
+    end
+)
+
+qdrant_search_tool = @mcp_tool(
+    :qdrant_search,
+    "Search a Qdrant collection with a pre-computed vector. Returns raw results with scores and payloads.",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "collection" =>
+                Dict("type" => "string", "description" => "Name of the collection"),
+            "vector" => Dict(
+                "type" => "array",
+                "description" => "Query vector (Float64 array)",
+                "items" => Dict("type" => "number"),
+            ),
+            "limit" => Dict(
+                "type" => "integer",
+                "description" => "Maximum number of results (default: 10)",
+            ),
+        ),
+        "required" => ["collection", "vector"],
+    ),
+    function (args)
+        err = _require_services()
+        err !== nothing && return err
+
+        collection = get(args, "collection", "")
+        isempty(collection) && return "Error: collection name is required"
+        raw_vector = get(args, "vector", Float64[])
+        isempty(raw_vector) && return "Error: vector is required"
+        vector = Vector{Float64}(raw_vector)
+        limit = Int(get(args, "limit", 10))
+
+        return QdrantClient.search(collection, vector; limit = limit)
+    end
+)
+
+ollama_embed_tool = @mcp_tool(
+    :ollama_embed,
+    "Get an embedding vector for text using Ollama. Returns Vector{Float64}.",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "text" =>
+                Dict("type" => "string", "description" => "Text to embed"),
+            "model" => Dict(
+                "type" => "string",
+                "description" => "Ollama embedding model (default: $DEFAULT_EMBEDDING_MODEL)",
+            ),
+        ),
+        "required" => ["text"],
+    ),
+    function (args)
+        model = get(args, "model", DEFAULT_EMBEDDING_MODEL)
+        err = _require_services(need_ollama = true, model = model)
+        err !== nothing && return err
+
+        text = get(args, "text", "")
+        isempty(text) && return "Error: text is required"
+
+        return get_ollama_embedding(text; model = model)
+    end
+)
+
+# ============================================================================
 # Tool Registration
 # ============================================================================
 
@@ -749,5 +957,12 @@ function create_qdrant_tools()
         qdrant_index_project_tool,
         qdrant_sync_index_tool,
         qdrant_reindex_file_tool,
+        qdrant_collection_exists_tool,
+        qdrant_create_collection_tool,
+        qdrant_delete_collection_tool,
+        qdrant_upsert_points_tool,
+        qdrant_delete_points_tool,
+        qdrant_search_tool,
+        ollama_embed_tool,
     ]
 end

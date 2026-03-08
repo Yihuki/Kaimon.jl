@@ -262,6 +262,40 @@ function create_collection(
 end
 
 """
+    delete_points(collection::String, point_ids::Vector{String}) -> Bool
+
+Delete specific points by their IDs.
+
+# Returns
+true on success, false on failure.
+"""
+function delete_points(collection::String, point_ids::Vector{String})
+    isempty(point_ids) && return true
+    try
+        body = Dict("points" => point_ids)
+        response = HTTP.post(
+            "$(QDRANT_URL[])/collections/$(collection)/points/delete",
+            ["Content-Type" => "application/json"],
+            JSON.json(body),
+        )
+        data = JSON.parse(String(response.body))
+        return get(data, "status", "") == "ok"
+    catch e
+        @error "Delete points failed" collection = collection exception = e
+        return false
+    end
+end
+
+"""
+    collection_exists(collection::String) -> Bool
+
+Check whether a collection exists in Qdrant.
+"""
+function collection_exists(collection::String)
+    return collection in list_collections()
+end
+
+"""
     delete_by_filter(collection::String, filter::Dict) -> Bool
 
 Delete points matching a filter condition.
