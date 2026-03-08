@@ -384,15 +384,75 @@ end
 """
     _extract_kwarg_types(f) -> Dict{Symbol,Type}
 
-For closure-based handlers (e.g. inner `function foo(; kw::T...)` returned by a
-factory), Julia stores the typed implementation as a field of the outer callable
-struct. The inner method's positional signature is `(InnerType, kwarg_types...,
-OuterClosureType)`, which lets us recover the annotated kwarg types that are
-invisible via the standard `methods`/`kwarg_decl` path.
+Recover annotated kwarg types from a function handler. Tries two strategies:
+
+1. **Module-level functions:** Use `code_lowered` to find the kwbody function
+   (the `#funcname#N` inner function Julia generates for kwargs), then read
+   its typed signature directly.
+
+2. **Closure-based handlers** (e.g. inner `function foo(; kw::T...)` returned
+   by a factory): Julia stores the typed implementation as a field of the outer
+   callable struct. The inner method's positional signature is
+   `(InnerType, kwarg_types..., OuterClosureType)`.
 
 Falls back to an empty dict (callers treat missing entries as `Any`).
 """
 function _extract_kwarg_types(f::Function)::Dict{Symbol,Type}
+    kw_names = try
+        Base.kwarg_decl(first(methods(f)))
+    catch
+        return Dict{Symbol,Type}()
+    end
+    isempty(kw_names) && return Dict{Symbol,Type}()
+
+    # Strategy 1: code_lowered → find kwbody function → read typed signature
+    result = _extract_kwarg_types_from_lowered(f, kw_names)
+    !isempty(result) && return result
+
+    # Strategy 2: closure struct field inspection (legacy pattern)
+    return _extract_kwarg_types_from_closure(f, kw_names)
+end
+
+"""Extract kwarg types by finding the kwbody function via code_lowered."""
+function _extract_kwarg_types_from_lowered(f::Function, kw_names::Vector{Symbol})::Dict{Symbol,Type}
+    try
+        cl = Base.code_lowered(f)
+        isempty(cl) && return Dict{Symbol,Type}()
+        ci = cl[1]
+
+        # Find the kwbody function — it's a GlobalRef matching #funcname#N
+        inner_f = nothing
+        fname = string(nameof(f))
+        for stmt in ci.code
+            if stmt isa GlobalRef
+                name_str = string(stmt.name)
+                if startswith(name_str, "#") && contains(name_str, "#$(fname)#")
+                    inner_f = getfield(stmt.mod, stmt.name)
+                    break
+                end
+            end
+        end
+        inner_f === nothing && return Dict{Symbol,Type}()
+
+        inner_ms = methods(inner_f)
+        isempty(inner_ms) && return Dict{Symbol,Type}()
+        sig = first(inner_ms).sig
+        while sig isa UnionAll
+            sig = sig.body
+        end
+        params = sig.parameters
+        # params = (InnerFuncType, kwarg_types..., OuterFuncType, positional_types...)
+        nkw = length(kw_names)
+        length(params) < nkw + 2 && return Dict{Symbol,Type}()
+        kw_types = params[2:1+nkw]
+        Dict{Symbol,Type}(kw_names[i] => kw_types[i] for i in eachindex(kw_names))
+    catch
+        Dict{Symbol,Type}()
+    end
+end
+
+"""Extract kwarg types from closure struct internals (legacy factory pattern)."""
+function _extract_kwarg_types_from_closure(f::Function, kw_names::Vector{Symbol})::Dict{Symbol,Type}
     fnames = fieldnames(typeof(f))
     isempty(fnames) && return Dict{Symbol,Type}()
     try
@@ -402,12 +462,40 @@ function _extract_kwarg_types(f::Function)::Dict{Symbol,Type}
         params = only(ms).sig.parameters   # (InnerT, kw_types..., OuterT)
         length(params) < 3 && return Dict{Symbol,Type}()
         kw_types = params[2:end-1]
-        kw_names = Base.kwarg_decl(methods(f)[1])
         length(kw_types) == length(kw_names) || return Dict{Symbol,Type}()
         Dict{Symbol,Type}(kw_names[i] => kw_types[i] for i in eachindex(kw_names))
     catch
         Dict{Symbol,Type}()
     end
+end
+
+"""
+    _extract_required_kwargs(f) -> Set{Symbol}
+
+Detect which kwargs are required (have no default value) by inspecting lowered IR.
+Julia emits `Core.UndefKeywordError(:name)` for required kwargs.
+"""
+function _extract_required_kwargs(f::Function)::Set{Symbol}
+    required = Set{Symbol}()
+    cl = try
+        Base.code_lowered(f)
+    catch
+        return required
+    end
+    isempty(cl) && return required
+    ci = cl[1]
+    for stmt in ci.code
+        if stmt isa Expr && stmt.head == :call && length(stmt.args) >= 2
+            callee = stmt.args[1]
+            if callee isa GlobalRef && callee.mod === Core && callee.name == :UndefKeywordError
+                arg = stmt.args[2]
+                if arg isa QuoteNode && arg.value isa Symbol
+                    push!(required, arg.value)
+                end
+            end
+        end
+    end
+    required
 end
 
 """
@@ -462,13 +550,14 @@ function _reflect_tool(tool::GateTool)
         end
     end
 
-    # Keyword arguments — try to recover types from the inner closure signature
+    # Keyword arguments — recover types and required status
     kw_names = try
         Base.kwarg_decl(m)
     catch
         Symbol[]
     end
     kw_types = _extract_kwarg_types(f)
+    required_kws = _extract_required_kwargs(f)
     for kw in kw_names
         T = get(kw_types, kw, Any)
         push!(
@@ -476,7 +565,7 @@ function _reflect_tool(tool::GateTool)
             Dict{String,Any}(
                 "name" => string(kw),
                 "type_meta" => _type_to_meta(T),
-                "required" => !_is_optional_type(T),
+                "required" => kw in required_kws,
                 "is_kwarg" => true,
             ),
         )
@@ -1800,6 +1889,7 @@ function _cleanup()
     # Just null the refs so our code doesn't use them after cleanup.
     _GATE_SOCKET[] = nothing
     _STREAM_SOCKET[] = nothing
+    _SERVICE_SOCKET[] = nothing
     _GATE_CONTEXT[] = nothing
 
     # Remove files
@@ -1847,6 +1937,126 @@ function progress(message::String)
     rid = get(task_local_storage(), :gate_request_id, nothing)
     rid === nothing && return
     _publish_stream("tool_progress", message; request_id = string(rid))
+end
+
+# ── Service Client (reverse channel to Kaimon server) ─────────────────────────
+# Extensions call Gate.call_tool(name, args) to invoke any registered Kaimon
+# MCP tool. This is the reverse of the existing gate protocol: instead of
+# Kaimon calling into the gate, the gate calls back into Kaimon.
+
+const _SERVICE_SOCKET = Ref{Union{ZMQ.Socket,Nothing}}(nothing)
+const _SERVICE_LOCK = ReentrantLock()
+
+"""
+    _connect_service!() -> Bool
+
+Connect to the Kaimon service endpoint. Returns true on success.
+The service socket is a ZMQ REQ that connects to the Kaimon server's
+REP socket at `ipc://~/.cache/kaimon/sock/kaimon-service.sock`.
+"""
+function _connect_service!()
+    sock_path = joinpath(SOCK_DIR, "kaimon-service.sock")
+    ispath(sock_path) || return false
+    ctx = _GATE_CONTEXT[]
+    ctx === nothing && return false
+    sock = Socket(ctx, REQ)
+    sock.rcvtimeo = 30000  # 30s timeout (some tools are slow)
+    sock.sndtimeo = 5000   # 5s send timeout
+    sock.linger = 0
+    connect(sock, "ipc://$(sock_path)")
+    _SERVICE_SOCKET[] = sock
+    return true
+end
+
+"""
+    _service_request(request::NamedTuple) -> Any
+
+Send a request to the Kaimon service endpoint and return the response value.
+Handles connection, serialization, error handling, and socket reset on failure.
+"""
+function _service_request(request)
+    lock(_SERVICE_LOCK) do
+        sock = _SERVICE_SOCKET[]
+        if sock === nothing
+            _connect_service!() || error("Kaimon service endpoint not available. Is the Kaimon TUI running?")
+            sock = _SERVICE_SOCKET[]
+        end
+
+        io = IOBuffer()
+        serialize(io, request)
+        send(sock, Message(take!(io)))
+
+        raw = recv(sock)
+        response = deserialize(IOBuffer(raw))
+
+        status = if hasproperty(response, :status)
+            response.status
+        elseif response isa Dict
+            get(response, :status, :error)
+        else
+            :error
+        end
+
+        if status == :error
+            msg = if hasproperty(response, :message)
+                response.message
+            elseif response isa Dict
+                get(response, :message, "unknown error")
+            else
+                "unknown error"
+            end
+            # Reset socket on error — ZMQ REQ/REP is strict about send/recv alternation
+            _SERVICE_SOCKET[] = nothing
+            error("Kaimon service error: $msg")
+        end
+
+        return response.value
+    end
+end
+
+"""
+    Gate.call_tool(tool_name::Symbol, args::Dict{String,Any}) -> Any
+
+Call a Kaimon MCP tool from within a gate session. The request is sent over
+a dedicated ZMQ REQ socket to the Kaimon server's service endpoint, which
+looks up the tool in its registry and calls the handler.
+
+This gives extensions access to all of Kaimon's registered tools — Qdrant
+search, Ollama embeddings, code indexing, etc. — without bundling their
+own clients.
+
+# Example
+```julia
+# From a gate tool handler:
+result = Gate.call_tool(:qdrant_search_code, Dict{String,Any}(
+    "query" => "function that handles HTTP routing",
+    "limit" => "5",
+))
+
+# List collections
+collections = Gate.call_tool(:qdrant_list_collections, Dict{String,Any}())
+```
+"""
+function call_tool(tool_name::Symbol, args::Dict{String,Any} = Dict{String,Any}())
+    _service_request((type = :tool_call, tool_name = tool_name, args = args))
+end
+
+"""
+    Gate.list_tools() -> Vector{NamedTuple}
+
+Discover all MCP tools registered on the Kaimon server.
+Returns a vector of `(name, description, parameters)` tuples.
+
+# Example
+```julia
+tools = Gate.list_tools()
+for t in tools
+    println(t.name, " — ", first(split(t.description, '\\n')))
+end
+```
+"""
+function list_tools()
+    _service_request((type = :list_tools,))
 end
 
 end # module Gate

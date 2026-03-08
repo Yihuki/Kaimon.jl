@@ -83,21 +83,17 @@ search_methods(query="AbstractString")
 | `execute_vscode_command` | Run any allowed VS Code command via the Remote Control extension. | `command`, `args`, `wait_for_response`, `timeout` |
 | `list_vscode_commands` | List all commands configured in `.vscode/settings.json` as allowed. | (none) |
 
-## Debugging
+## Debugging (Infiltrator.jl)
 
-All debugging tools require VS Code with the Julia extension and an active debug session.
+Kaimon integrates with Infiltrator.jl for interactive breakpoint debugging. When a session hits `@infiltrate`, execution pauses and you can inspect locals and eval expressions in the breakpoint scope.
 
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
-| `start_debug_session` | Open the debug view and begin debugging. | (none) |
-| `debug_step_over` | Step over the current line. | `wait_for_response` |
-| `debug_step_into` | Step into a function call. | (none) |
-| `debug_step_out` | Step out of the current function. | (none) |
-| `debug_continue` | Continue execution until next breakpoint or completion. | (none) |
-| `debug_stop` | Stop the current debug session. | (none) |
-| `add_watch_expression` | Add a watch expression to monitor during debugging. | `expression` |
-| `copy_debug_value` | Copy a debug variable value to the clipboard. | `view` ("variables" or "watch") |
-| `open_file_and_set_breakpoint` | Open a file in VS Code and set a breakpoint at a specific line. | `file_path`, `line` |
+| `debug_ctrl` | Check breakpoint status or resume execution. | `action` ("status" or "continue"), `session` |
+| `debug_eval` | Evaluate an expression in the context of a paused breakpoint. | `expression`, `session` |
+| `debug_exfiltrate` | Evaluate code containing `@exfiltrate` to capture local variables. | `code`, `session` |
+| `debug_inspect_safehouse` | Inspect variables captured by `@exfiltrate`. | `expression` (optional), `session` |
+| `debug_clear_safehouse` | Clear all captured variables from the safehouse. | `session` |
 
 ## Package Management
 

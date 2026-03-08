@@ -1834,6 +1834,147 @@ Pattern uses ReTest regex syntax to filter tests.""",
     end
 )
 
+extension_info_tool = @mcp_tool(
+    :extension_info,
+    """Get information about loaded Kaimon extensions and their tools.
+
+No arguments: list all extensions with status and tool names.
+With name: detailed view of one extension including per-tool documentation and parameter schemas.""",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "name" => Dict(
+                "type" => "string",
+                "description" => "Extension namespace to get details for. Omit to list all extensions.",
+            ),
+        ),
+        "required" => [],
+    ),
+    args -> begin
+        extensions = get_managed_extensions()
+        conn_mgr = GATE_CONN_MGR[]
+        name = get(args, "name", nothing)
+
+        if name === nothing
+            # List all extensions
+            if isempty(extensions)
+                return "No extensions configured."
+            end
+
+            lines = String[]
+            for ext in extensions
+                ns = ext.config.manifest.namespace
+                desc = ext.config.manifest.description
+                status_icon = ext.status == :running ? "●" :
+                              ext.status == :crashed ? "●" :
+                              "○"
+
+                # Get tool names if connected
+                tool_names = String[]
+                if conn_mgr !== nothing
+                    conn = _find_ext_connection(ext, conn_mgr)
+                    if conn !== nothing && !isempty(conn.session_tools)
+                        for tool in conn.session_tools
+                            push!(tool_names, get(tool, "name", "?"))
+                        end
+                    end
+                end
+
+                line = "$status_icon $ns ($(ext.status))"
+                !isempty(desc) && (line *= " — $desc")
+                push!(lines, line)
+                if !isempty(tool_names)
+                    push!(lines, "  Tools: $(join(tool_names, ", "))")
+                end
+            end
+            return join(lines, "\n")
+        else
+            # Detail view for a specific extension
+            idx = findfirst(e -> e.config.manifest.namespace == name, extensions)
+            if idx === nothing
+                available = join([e.config.manifest.namespace for e in extensions], ", ")
+                return "Error: No extension '$(name)' found. Available: $available"
+            end
+
+            ext = extensions[idx]
+            manifest = ext.config.manifest
+            entry = ext.config.entry
+
+            # Status info
+            status_icon = ext.status == :running ? "●" :
+                          ext.status == :crashed ? "●" :
+                          "○"
+            pid_str = if ext.process !== nothing && Base.process_running(ext.process)
+                string(getpid(ext.process))
+            else
+                "—"
+            end
+            uptime_str = ext.status == :running ? format_uptime(time() - ext.started_at) : "—"
+
+            lines = String[]
+            push!(lines, "$(manifest.namespace) — $(manifest.module_name)")
+            push!(lines, "Status: $status_icon $(ext.status) (PID $pid_str, uptime $uptime_str)")
+            !isempty(manifest.description) && push!(lines, "Description: $(manifest.description)")
+            push!(lines, "Project: $(entry.project_path)")
+
+            # Tool documentation
+            conn = conn_mgr !== nothing ? _find_ext_connection(ext, conn_mgr) : nothing
+            if conn !== nothing && !isempty(conn.session_tools)
+                tools = conn.session_tools
+                push!(lines, "")
+                push!(lines, "Tools ($(length(tools))):")
+
+                for tool in tools
+                    tname = get(tool, "name", "unknown")
+                    tdesc = get(tool, "description", "")
+                    targs = get(tool, "arguments", Dict{String,Any}[])
+
+                    # Build signature
+                    param_names = String[]
+                    for arg in targs
+                        push!(param_names, get(arg, "name", "?"))
+                    end
+                    sig = isempty(param_names) ? "" : "($(join(param_names, ", ")))"
+
+                    push!(lines, "")
+                    push!(lines, "  $(manifest.namespace).$tname$sig")
+
+                    # Description (first paragraph only for readability)
+                    if !isempty(tdesc)
+                        first_para = first(split(tdesc, "\n\n"))
+                        push!(lines, "    $first_para")
+                    end
+
+                    # Parameters
+                    if !isempty(targs)
+                        push!(lines, "    Parameters:")
+                        for arg in targs
+                            arg_name = get(arg, "name", "?")
+                            type_meta = get(arg, "type_meta", nothing)
+                            arg_type = if type_meta isa Dict
+                                get(type_meta, "julia_type", "Any")
+                            elseif type_meta isa String
+                                type_meta
+                            else
+                                "Any"
+                            end
+                            required = get(arg, "required", false)
+                            req = required ? " (required)" : ""
+                            push!(lines, "      $arg_name: $arg_type$req")
+                        end
+                    end
+                end
+            elseif conn !== nothing
+                push!(lines, "\nTools: (none registered)")
+            else
+                push!(lines, "\nTools: waiting for gate connection...")
+            end
+
+            return join(lines, "\n")
+        end
+    end
+)
+
 stress_test_tool = @mcp_tool(
     :stress_test,
     """Run a stress test by spawning concurrent simulated MCP agents.

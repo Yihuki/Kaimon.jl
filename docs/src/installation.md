@@ -37,16 +37,16 @@ docker run -d --name qdrant -p 6333:6333 -p 6334:6334 \
 
 Qdrant is not required for core functionality. The semantic search tools will simply be unavailable if no Qdrant instance is detected.
 
-### VS Code Remote Control (Debugging)
+### VS Code Remote Control
 
-To use the VS Code debugging tools (`start_debug_session`, `open_file_and_set_breakpoint`, `debug_step_over`, etc.), install the **Remote Control** extension in VS Code:
+To use VS Code integration tools (`execute_vscode_command`, `navigate_to_file`, etc.), install the **Remote Control** extension in VS Code:
 
 1. Open VS Code
 2. Go to Extensions (Ctrl+Shift+X / Cmd+Shift+X)
 3. Search for "Remote Control" by jeandeaual
 4. Install the extension
 
-The debugging tools allow AI agents to set breakpoints, step through code, inspect variables, and control debug sessions directly from the MCP interface.
+This enables AI agents to execute VS Code commands and navigate to specific file locations from the MCP interface.
 
 ## Verify Installation
 

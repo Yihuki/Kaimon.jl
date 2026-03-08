@@ -231,6 +231,7 @@ include("vscode.jl")
 include("reflection_tools.jl")
 include("qdrant_tools.jl")
 include("qdrant_indexer.jl")
+include("service_endpoint.jl")
 
 # ============================================================================
 # VS Code Response Storage for Bidirectional Communication
@@ -1434,6 +1435,7 @@ function collect_tools()::Vector{MCPTool}
         pkg_rm_tool,
         run_tests_tool,
         stress_test_tool,
+        extension_info_tool,
         reflection_tools...,
         qdrant_tools...,
     ]

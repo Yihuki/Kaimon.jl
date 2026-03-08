@@ -76,6 +76,7 @@ ex(e="function f() ... end", q=false)    # Definitions
 **Debugging:** `debug_ctrl()`, `debug_eval()`, `debug_exfiltrate()`, `debug_inspect_safehouse()`, `debug_clear_safehouse()`
 **Utilities:** `format_code(path)`, `ping()`, `investigate_environment()`
 **Help:** `tool_help("tool_name")` or `tool_help("tool_name", extended=true)`
+**Extensions:** `extension_info()` — list loaded extensions and their tools. `extension_info(name="smlabnotes")` for detailed tool docs.
 **Gate tools:** If session tools appear (namespaced as `<ns>.toolname`), use the `gate-tools` MCP prompt for authoring reference.
 
 ---

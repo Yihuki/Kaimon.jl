@@ -229,6 +229,8 @@ function cleanup_stale_sessions!(sock_dir::String)
     # Sweep orphan .sock files with no corresponding .json
     for f in readdir(sock_dir)
         endswith(f, ".sock") || continue
+        # Skip non-session sockets (e.g. kaimon-service.sock)
+        startswith(f, "kaimon-") && continue
         # Derive session_id: strip both "-stream.sock" and ".sock"
         session_id = if endswith(f, "-stream.sock")
             replace(f, "-stream.sock" => "")
@@ -417,6 +419,18 @@ function disconnect!(conn::REPLConnection)
             conn.sub_socket = nothing
         end
         conn.status = :disconnected
+    end
+
+    # Wake any pending eval callers so they fail immediately instead of
+    # blocking until the hard timeout.  Closing a Channel causes `take!`
+    # and `isready` to throw, which the polling loop handles gracefully.
+    lock(conn._eval_inboxes_lock) do
+        for (_, inbox) in conn._eval_inboxes
+            try
+                close(inbox)
+            catch
+            end
+        end
     end
 end
 
@@ -646,6 +660,17 @@ function eval_remote_async(
                     "⏳ Evaluation running ($elapsed_str elapsed, no output for $(round(Int, silence))s). " *
                     "Session may be compiling, performing a long computation, or stuck.\n")
                 last_keepalive = time()
+            end
+
+            # Bail immediately if the session disconnected while we were waiting
+            if !isopen(my_inbox) || conn.status == :disconnected
+                return (
+                    stdout = "",
+                    stderr = "",
+                    value_repr = "",
+                    exception = "Session disconnected during evaluation. The process may have exited or been restarted.",
+                    backtrace = nothing,
+                )
             end
 
             # Poll the per-request inbox
@@ -1149,7 +1174,7 @@ function start!(mgr::ConnectionManager)
                             end
                         end
                     elseif conn.status == :disconnected
-                        if isfile(conn.socket_path)
+                        if ispath(conn.socket_path)
                             connect!(mgr, conn)
                         else
                             push!(to_remove, conn)
@@ -1482,6 +1507,10 @@ function _call_session_tool_async(
     try
         deadline = time() + timeout_ms / 1000.0
         while time() < deadline
+            if !isopen(my_inbox) || conn.status == :disconnected
+                return "Error: Session disconnected during tool call. The process may have exited or been restarted."
+            end
+
             msg = if isready(my_inbox)
                 try
                     take!(my_inbox)
