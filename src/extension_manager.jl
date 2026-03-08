@@ -31,6 +31,11 @@ end
 const MANAGED_EXTENSIONS = ManagedExtension[]
 const MANAGED_EXTENSIONS_LOCK = ReentrantLock()
 
+function _push_error!(ext::ManagedExtension, msg::String)
+    push!(ext.error_log, msg)
+    length(ext.error_log) > 20 && deleteat!(ext.error_log, 1:length(ext.error_log) - 20)
+end
+
 # ── Spawn / Stop / Restart ───────────────────────────────────────────────────
 
 """
@@ -72,6 +77,7 @@ function spawn_extension!(ext::ManagedExtension)
     empty!(ext.error_log)
 
     script = _build_extension_script(ext.config)
+    log_io = nothing
 
     try
         # Use julia with threads for responsiveness
@@ -97,7 +103,7 @@ function spawn_extension!(ext::ManagedExtension)
             # Process exited — update status if we haven't already stopped it
             if ext.status in (:starting, :running)
                 ext.status = :crashed
-                push!(ext.error_log, "Process exited at $(Dates.now())")
+                _push_error!(ext, "Process exited at $(Dates.now())")
                 _push_log!(
                     :warn,
                     "Extension '$(ext.config.manifest.namespace)' process exited unexpectedly",
@@ -111,8 +117,11 @@ function spawn_extension!(ext::ManagedExtension)
 
         _push_log!(:info, "Extension '$(ext.config.manifest.namespace)' subprocess spawning (PID=$(getpid(proc)))")
     catch e
+        if log_io !== nothing
+            try; close(log_io); catch; end
+        end
         ext.status = :crashed
-        push!(ext.error_log, "Spawn failed: $(sprint(showerror, e))")
+        _push_error!(ext, "Spawn failed: $(sprint(showerror, e))")
         _push_log!(
             :error,
             "Failed to spawn extension '$(ext.config.manifest.namespace)': $(sprint(showerror, e))",
@@ -130,7 +139,7 @@ function stop_extension!(ext::ManagedExtension; timeout::Float64 = 5.0)
     ext.status = :stopping
 
     proc = ext.process
-    if proc !== nothing && process_running(proc)
+    if proc !== nothing && Base.process_running(proc)
         try
             kill(proc, Base.SIGTERM)
         catch
@@ -138,12 +147,12 @@ function stop_extension!(ext::ManagedExtension; timeout::Float64 = 5.0)
 
         # Wait for graceful shutdown
         deadline = time() + timeout
-        while process_running(proc) && time() < deadline
+        while Base.process_running(proc) && time() < deadline
             sleep(0.1)
         end
 
         # Force kill if still running
-        if process_running(proc)
+        if Base.process_running(proc)
             try
                 kill(proc, Base.SIGKILL)
             catch
@@ -189,10 +198,10 @@ function _monitor_extensions!(conn_mgr)
             if ext.status == :starting || ext.status == :running
                 # Check if process is still alive
                 proc = ext.process
-                if proc !== nothing && !process_running(proc)
+                if proc !== nothing && !Base.process_running(proc)
                     if ext.status != :crashed
                         ext.status = :crashed
-                        push!(ext.error_log, "Process died at $(Dates.now())")
+                        _push_error!(ext, "Process died at $(Dates.now())")
                     end
                 end
             end
@@ -215,7 +224,7 @@ function _monitor_extensions!(conn_mgr)
                 # Timeout: if starting for >60s, mark as crashed
                 if ext.status == :starting && time() - ext.started_at > 60.0
                     ext.status = :crashed
-                    push!(ext.error_log, "Startup timeout at $(Dates.now())")
+                    _push_error!(ext, "Startup timeout at $(Dates.now())")
                     _push_log!(:warn, "Extension '$ns' startup timed out")
                 end
             end

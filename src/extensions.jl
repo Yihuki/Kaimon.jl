@@ -12,6 +12,7 @@ struct ExtensionManifest
     namespace::String       # dot-namespace prefix (e.g. "smlabnotes")
     module_name::String     # Julia module to `using` (e.g. "SMLabNotes")
     tools_function::String  # exported function returning Vector{GateTool}
+    description::String     # human-readable description (from kaimon.toml, optional)
 end
 
 """
@@ -53,7 +54,7 @@ end
 
 Parse `kaimon.toml` from the project root. Throws on missing/invalid files.
 """
-function parse_extension_manifest(project_path::String)
+function parse_extension_manifest(project_path::AbstractString)
     toml_path = joinpath(project_path, "kaimon.toml")
     isfile(toml_path) || error("No kaimon.toml found at $toml_path")
     data = TOML.parsefile(toml_path)
@@ -68,10 +69,13 @@ function parse_extension_manifest(project_path::String)
     tools_function === nothing &&
         error("kaimon.toml missing extension.tools_function at $toml_path")
 
+    description = String(get(ext, "description", ""))
+
     return ExtensionManifest(
         String(namespace),
         String(module_name),
         String(tools_function),
+        description,
     )
 end
 
