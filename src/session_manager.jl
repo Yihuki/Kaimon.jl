@@ -54,12 +54,15 @@ Generate the Julia `-e` script that boots a session subprocess.
 function _build_session_script(project_path::String;
                                name::String = "",
                                allow_restart::Bool = true)
-    # Gate serves in background via @async; Julia falls through to interactive REPL on PTY
+    # The subprocess is launched with --project=<path>, so the project and its
+    # deps are available immediately.  Kaimon is added to LOAD_PATH so it
+    # doesn't need to be in the user's global environment.
+    kaimon_dir = pkgdir(Kaimon)
     return """
     try; using Revise; catch; end
+    insert!(LOAD_PATH, 1, $(repr(kaimon_dir)))
     using Kaimon
-    import Pkg; Pkg.activate($(repr(project_path)); io=devnull)
-    Pkg.instantiate(; io=devnull)
+    import Pkg; Pkg.instantiate(; io=devnull)
     @async Kaimon.Gate.serve(force=true, allow_mirror=true, allow_restart=$(allow_restart), spawned_by="agent")
     """
 end
@@ -81,11 +84,11 @@ function _resolve_launch_config(project_path::String)
 end
 
 """
-    _build_julia_cmd(lc::LaunchConfig, script::String) -> Vector{String}
+    _build_julia_cmd(lc::LaunchConfig, script::String; project::String="") -> Vector{String}
 
 Build the Julia command array from a LaunchConfig and boot script.
 """
-function _build_julia_cmd(lc::LaunchConfig, script::String)
+function _build_julia_cmd(lc::LaunchConfig, script::String; project::String = "")
     julia_bin = joinpath(Sys.BINDIR, "julia")
     cmd = [julia_bin, "-i"]
 
@@ -101,6 +104,9 @@ function _build_julia_cmd(lc::LaunchConfig, script::String)
 
     # Extra flags
     append!(cmd, lc.extra_flags)
+
+    # Project activation via --project flag
+    !isempty(project) && push!(cmd, "--project=$project")
 
     # Always include startup-file=no and the boot script
     append!(cmd, ["--startup-file=no", "-e", script])
@@ -129,8 +135,16 @@ function spawn_session!(ms::ManagedSession)
 
     try
         lc = _resolve_launch_config(ms.project_path)
-        cmd = _build_julia_cmd(lc, script)
-        pty = Tachikoma.pty_spawn(cmd; rows = 24, cols = 80)
+        cmd = _build_julia_cmd(lc, script; project = ms.project_path)
+        # Override JULIA_LOAD_PATH to restore the default ["@", "@v#.#", "@stdlib"]
+        # and clear JULIA_PROJECT so --project controls the active environment,
+        # matching the behavior of running `julia --project=<path>` from the shell.
+        # (pty_spawn merges env into the parent ENV, so we set explicit values.)
+        env = Dict{String,String}(
+            "JULIA_LOAD_PATH" => "@:@v#.#:@stdlib",
+            "JULIA_PROJECT" => "",
+        )
+        pty = Tachikoma.pty_spawn(cmd; rows = 24, cols = 80, env)
         ms.pty = pty
         ms.process = nothing
         ms.status = :starting
