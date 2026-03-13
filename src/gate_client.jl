@@ -115,10 +115,11 @@ end
 # ── Display Name Derivation ───────────────────────────────────────────────────
 
 """
-    _derive_display_name(project_path, julia_version, existing_names) -> String
+    _derive_display_name(project_path, julia_version, existing_names; namespace="") -> String
 
 Derive a short display name from the project path, deduplicating against
 already-assigned names.  Rules:
+  - Non-empty `namespace` → use it directly (e.g. extension "smlabnotes")
   - Non-empty project_path → `basename(project_path)` (e.g. "MyApp")
   - Global env or empty path → `@v<julia_version>` (e.g. "@v1.12")
   - Collisions get a `-2`, `-3`, … suffix
@@ -126,9 +127,12 @@ already-assigned names.  Rules:
 function _derive_display_name(
     project_path::String,
     julia_version::String,
-    existing_names::Vector{String},
+    existing_names::Vector{String};
+    namespace::String = "",
 )::String
-    base = if isempty(project_path) || project_path == homedir()
+    base = if !isempty(namespace)
+        namespace
+    elseif isempty(project_path) || project_path == homedir()
         # Global environment — use Julia version
         "@v$(julia_version)"
     else
@@ -1270,7 +1274,8 @@ function start!(mgr::ConnectionManager)
                                 conn.display_name = _derive_display_name(
                                     new_path,
                                     conn.julia_version,
-                                    existing,
+                                    existing;
+                                    namespace = conn.namespace,
                                 )
                                 _fire_sessions_changed(mgr)
                             end
@@ -1285,8 +1290,22 @@ function start!(mgr::ConnectionManager)
                                     conn.session_tools = pong_tools
                                     conn.tools_hash = new_hash
                                     if !isempty(pong_ns)
+                                        old_ns = conn.namespace
                                         conn.namespace = pong_ns
                                         _resolve_namespace!(conn, mgr)
+                                        # Re-derive display name for extension sessions
+                                        # once namespace is known (replaces project basename)
+                                        if isempty(old_ns) && conn.spawned_by == "extension"
+                                            existing = lock(mgr.lock) do
+                                                [c.display_name for c in mgr.connections if c !== conn]
+                                            end
+                                            conn.display_name = _derive_display_name(
+                                                conn.project_path,
+                                                conn.julia_version,
+                                                existing;
+                                                namespace = pong_ns,
+                                            )
+                                        end
                                     end
                                     _register_session_tools!(conn)
                                     _fire_sessions_changed(mgr)
@@ -1737,24 +1756,55 @@ end
 Resolve namespace collisions. If another connected session already owns the
 same namespace prefix, add a dedup suffix (_2, _3, …). Updates `conn.namespace`
 in place and returns the final namespace.
+
+Extension sessions (spawned_by="extension") are singletons by namespace:
+when a new extension claims a namespace already held by a stale extension
+connection, the old connection is evicted instead of deduplicating.
 """
 function _resolve_namespace!(conn::REPLConnection, mgr::ConnectionManager)
     base_ns = conn.namespace
     isempty(base_ns) && return base_ns
 
-    # Collect namespaces already in use by OTHER connected sessions
+    # Find colliding connections
+    colliders = lock(mgr.lock) do
+        [
+            c for c in mgr.connections if
+            c !== conn && c.namespace == base_ns && c.status in (:connected, :evaluating, :stalled, :connecting)
+        ]
+    end
+
+    if isempty(colliders)
+        return base_ns
+    end
+
+    # Extension sessions are singletons — evict stale extension connections
+    # with the same namespace instead of deduplicating
+    if conn.spawned_by == "extension"
+        lock(mgr.lock) do
+            for old in colliders
+                if old.spawned_by == "extension"
+                    @debug "Evicting stale extension connection" namespace = base_ns old_key = short_key(old) new_key = short_key(conn)
+                    _unregister_session_tools!(old)
+                    disconnect!(old)
+                    idx = findfirst(c -> c === old, mgr.connections)
+                    if idx !== nothing
+                        _remove_session_files(mgr.sock_dir, old.session_id)
+                        deleteat!(mgr.connections, idx)
+                    end
+                end
+            end
+        end
+        _fire_sessions_changed(mgr)
+        return base_ns
+    end
+
+    # Non-extension collision — add dedup suffix
     taken = lock(mgr.lock) do
         Set(
             c.namespace for c in mgr.connections if
             c !== conn && c.status in (:connected, :evaluating) && !isempty(c.namespace)
         )
     end
-
-    if base_ns ∉ taken
-        return base_ns
-    end
-
-    # Collision — add dedup suffix
     n = 2
     candidate = "$(base_ns)_$n"
     while candidate in taken
