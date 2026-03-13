@@ -24,8 +24,9 @@ function ManagedSession(project_path::String; name::String = "")
     if isempty(name)
         name = basename(project_path)
     end
-    log_dir = kaimon_cache_dir()
-    log_file = joinpath(log_dir, "session_$(basename(project_path)).log")
+    log_dir = joinpath(kaimon_cache_dir(), "sessions")
+    mkpath(log_dir)
+    log_file = joinpath(log_dir, "$(basename(project_path)).log")
     ManagedSession(project_path, name, nothing, nothing, :stopped, 0.0, "", String[], log_file)
 end
 
@@ -70,10 +71,10 @@ Look up the LaunchConfig for a project from the projects config.
 Returns default LaunchConfig if not found.
 """
 function _resolve_launch_config(project_path::String)
-    norm_path = try; realpath(project_path); catch; project_path; end
+    norm_path = normalize_path(project_path)
     entries = load_projects_config()
     for entry in entries
-        entry_norm = try; realpath(expanduser(entry.project_path)); catch; expanduser(entry.project_path); end
+        entry_norm = normalize_path(entry.project_path)
         entry_norm == norm_path && return entry.launch_config
     end
     return LaunchConfig()
@@ -234,55 +235,61 @@ Called periodically from the TUI view tick. Checks session health:
 """
 function _monitor_managed_sessions!(conn_mgr)
     conn_mgr === nothing && return
-    lock(MANAGED_SESSIONS_LOCK) do
-        for ms in MANAGED_SESSIONS
-            if ms.status == :starting || ms.status == :running
-                # Check if process is still alive (PTY or legacy pipeline)
-                alive = if ms.pty !== nothing
-                    Tachikoma.pty_alive(ms.pty)
-                elseif ms.process !== nothing
-                    Base.process_running(ms.process)
-                else
-                    false
+
+    # Snapshot under lock — all slow I/O happens outside the lock
+    sessions = lock(MANAGED_SESSIONS_LOCK) do
+        copy(MANAGED_SESSIONS)
+    end
+
+    conns = connected_sessions(conn_mgr)
+
+    for ms in sessions
+        if ms.status == :starting || ms.status == :running
+            # Check if process is still alive (PTY or legacy pipeline)
+            alive = if ms.pty !== nothing
+                Tachikoma.pty_alive(ms.pty)
+            elseif ms.process !== nothing
+                Base.process_running(ms.process)
+            else
+                false
+            end
+            if !alive
+                if ms.status != :crashed
+                    ms.status = :crashed
+                    _push_session_error!(ms, "Process died at $(Dates.now())")
                 end
-                if !alive
-                    if ms.status != :crashed
-                        ms.status = :crashed
-                        _push_session_error!(ms, "Process died at $(Dates.now())")
-                    end
+            end
+        end
+
+        if ms.status == :starting
+            # Look for a matching gate session by project_path
+            norm_path = try
+                realpath(ms.project_path)
+            catch
+                ms.project_path
+            end
+            for conn in conns
+                conn_norm = try
+                    realpath(conn.project_path)
+                catch
+                    conn.project_path
+                end
+                if conn_norm == norm_path && conn.spawned_by == "agent"
+                    ms.status = :running
+                    ms.session_key = short_key(conn)
+                    _push_log!(
+                        :info,
+                        "Session '$(ms.name)' connected (session=$(ms.session_key))",
+                    )
+                    break
                 end
             end
 
-            if ms.status == :starting
-                # Look for a matching gate session by project_path
-                norm_path = try
-                    realpath(ms.project_path)
-                catch
-                    ms.project_path
-                end
-                for conn in connected_sessions(conn_mgr)
-                    conn_norm = try
-                        realpath(conn.project_path)
-                    catch
-                        conn.project_path
-                    end
-                    if conn_norm == norm_path && conn.spawned_by == "agent"
-                        ms.status = :running
-                        ms.session_key = short_key(conn)
-                        _push_log!(
-                            :info,
-                            "Session '$(ms.name)' connected (session=$(ms.session_key))",
-                        )
-                        break
-                    end
-                end
-
-                # Timeout: if starting for >120s, mark as crashed
-                if ms.status == :starting && time() - ms.started_at > 120.0
-                    ms.status = :crashed
-                    _push_session_error!(ms, "Startup timeout at $(Dates.now())")
-                    _push_log!(:warn, "Session '$(ms.name)' startup timed out")
-                end
+            # Timeout: if starting for >120s, mark as crashed
+            if ms.status == :starting && time() - ms.started_at > 120.0
+                ms.status = :crashed
+                _push_session_error!(ms, "Startup timeout at $(Dates.now())")
+                _push_log!(:warn, "Session '$(ms.name)' startup timed out")
             end
         end
     end
@@ -310,15 +317,16 @@ function find_managed_session(project_path::String)
     catch
         project_path
     end
-    lock(MANAGED_SESSIONS_LOCK) do
-        for ms in MANAGED_SESSIONS
-            ms_norm = try
-                realpath(ms.project_path)
-            catch
-                ms.project_path
-            end
-            ms_norm == norm_path && return ms
-        end
-        return nothing
+    sessions = lock(MANAGED_SESSIONS_LOCK) do
+        copy(MANAGED_SESSIONS)
     end
+    for ms in sessions
+        ms_norm = try
+            realpath(ms.project_path)
+        catch
+            ms.project_path
+        end
+        ms_norm == norm_path && return ms
+    end
+    return nothing
 end
