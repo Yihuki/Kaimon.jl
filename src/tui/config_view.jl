@@ -128,9 +128,7 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
                 y > bottom(proj_inner) - 2 && break
                 # Check if a session is running for this project
                 running = any(ms -> begin
-                    ms_norm = try; realpath(ms.project_path); catch; ms.project_path; end
-                    e_norm = try; realpath(entry.project_path); catch; entry.project_path; end
-                    ms_norm == e_norm && ms.status == :running
+                    normalize_path(ms.project_path) == normalize_path(entry.project_path) && ms.status == :running
                 end, managed)
 
                 marker = i == m.selected_project ? "▸ " : "  "

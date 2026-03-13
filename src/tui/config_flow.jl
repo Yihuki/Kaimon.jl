@@ -192,7 +192,7 @@ function execute_onboarding!(m::KaimonModel)
         return
     end
     try
-        path = rstrip(expanduser(m.onboard_path), ['/', '\\'])
+        path = normalize_path(m.onboard_path)
         isdir(path) || mkpath(path)
         startup_file = joinpath(path, ".julia-startup.jl")
         write(startup_file, Generate.render_template("julia-startup.jl"))
@@ -251,25 +251,17 @@ function execute_project_add!(m::KaimonModel)
         return
     end
     try
-        path = rstrip(expanduser(m.onboard_path), ['/', '\\'])
+        path = normalize_path(m.onboard_path)
         isdir(path) || error("Directory does not exist: $path")
         isfile(joinpath(path, "Project.toml")) ||
             error("No Project.toml found in $path")
 
-        norm_path = try
-            realpath(path)
-        catch
-            path
-        end
+        norm_path = path
 
         # Check if already in list
         entries = load_projects_config()
         for entry in entries
-            entry_norm = try
-                realpath(expanduser(entry.project_path))
-            catch
-                expanduser(entry.project_path)
-            end
+            entry_norm = normalize_path(entry.project_path)
             if entry_norm == norm_path
                 m.flow_message = "Project already in allowed list"
                 m.flow_success = false

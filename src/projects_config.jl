@@ -36,15 +36,7 @@ ProjectEntry(project_path::String, enabled::Bool) = ProjectEntry(project_path, e
 Return the path to the projects config file (`~/.config/kaimon/projects.json`).
 """
 function get_projects_config_path()
-    config_dir = if Sys.iswindows()
-        joinpath(
-            get(ENV, "APPDATA", joinpath(homedir(), "AppData", "Roaming")),
-            "Kaimon",
-        )
-    else
-        joinpath(get(ENV, "XDG_CONFIG_HOME", joinpath(homedir(), ".config")), "kaimon")
-    end
-    return joinpath(config_dir, "projects.json")
+    return joinpath(kaimon_config_dir(), "projects.json")
 end
 
 """
@@ -235,13 +227,13 @@ Match `project_path` against session pref patterns in priority order:
 Returns the preference value for `key`, or `nothing` if no match.
 """
 function resolve_session_pref(prefs::Dict{String,SessionPrefs}, project_path::String, key::Symbol)
-    norm_path = try; realpath(project_path); catch; project_path; end
+    norm_path = normalize_path(project_path)
     bname = basename(norm_path)
 
     # Priority 1: full path match
     for (pattern, sp) in prefs
         !contains(pattern, '/') && continue
-        pattern_norm = try; realpath(expanduser(pattern)); catch; expanduser(pattern); end
+        pattern_norm = normalize_path(pattern)
         if pattern_norm == norm_path
             val = getfield(sp, key)
             val !== nothing && return val
@@ -271,18 +263,10 @@ end
 
 function is_project_allowed(path::String)
     entries = load_projects_config()
-    norm_path = try
-        realpath(expanduser(path))
-    catch
-        expanduser(path)
-    end
+    norm_path = normalize_path(path)
     for entry in entries
         entry.enabled || continue
-        entry_norm = try
-            realpath(expanduser(entry.project_path))
-        catch
-            expanduser(entry.project_path)
-        end
+        entry_norm = normalize_path(entry.project_path)
         entry_norm == norm_path && return true
     end
     return false

@@ -53,6 +53,48 @@ function kaimon_cache_dir()
     return dir
 end
 
+# ── Shared config directory ───────────────────────────────────────────────────
+# Single source of truth for ~/.config/kaimon (respects XDG_CONFIG_HOME).
+# All user configuration files (projects.json, security.json, extensions.json) go here.
+
+"""
+    kaimon_config_dir() -> String
+
+Return the path to the Kaimon config directory, creating it if needed.
+Respects `XDG_CONFIG_HOME` on Unix; uses `APPDATA` on Windows.
+Defaults to `~/.config/kaimon`.
+"""
+function kaimon_config_dir()
+    dir = if Sys.iswindows()
+        joinpath(
+            get(ENV, "APPDATA", joinpath(homedir(), "AppData", "Roaming")),
+            "Kaimon",
+        )
+    else
+        joinpath(get(ENV, "XDG_CONFIG_HOME", joinpath(homedir(), ".config")), "kaimon")
+    end
+    mkpath(dir)
+    return dir
+end
+
+# ── Path normalization ────────────────────────────────────────────────────────
+
+"""
+    normalize_path(path::String) -> String
+
+Expand `~`, resolve symlinks and `..` segments. Falls back to `expanduser` +
+`normpath` when the target doesn't exist yet (e.g. a path the user is about
+to create).
+"""
+function normalize_path(path::String)
+    expanded = expanduser(path)
+    try
+        realpath(expanded)
+    catch
+        normpath(expanded)
+    end
+end
+
 include("utils.jl")
 include("database.jl")
 include("qdrant_client.jl")

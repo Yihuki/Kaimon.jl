@@ -460,9 +460,8 @@ end
 
 function execute_ext_add!(m::KaimonModel)
     try
-        raw_path = rstrip(expanduser(Tachikoma.text(m.ext_path_input)), ['/', '\\'])
-        isdir(raw_path) || error("Directory not found: $raw_path")
-        path = realpath(raw_path)
+        path = normalize_path(Tachikoma.text(m.ext_path_input))
+        isdir(path) || error("Directory not found: $path")
 
         # Validate kaimon.toml exists and is parseable
         manifest = parse_extension_manifest(path)
@@ -470,7 +469,7 @@ function execute_ext_add!(m::KaimonModel)
         # Check for duplicates (normalize existing paths for reliable comparison)
         existing = load_extensions_config()
         for e in existing
-            existing_path = try; realpath(e.project_path); catch; e.project_path; end
+            existing_path = normalize_path(e.project_path)
             if existing_path == path
                 error("Extension already registered: $(_short_path(path))")
             end
@@ -560,7 +559,7 @@ function _view_ext_flow(m::KaimonModel, area::Rect, buf::Buffer)
         msg = "Register extension?\n\nPath: $(_short_path(path))"
         # Try to show the namespace
         try
-            manifest = parse_extension_manifest(expanduser(rstrip(path, ['/', '\\'])))
+            manifest = parse_extension_manifest(normalize_path(path))
             msg *= "\nNamespace: $(manifest.namespace)"
             msg *= "\nModule: $(manifest.module_name)"
         catch
@@ -661,8 +660,8 @@ function _toggle_ext_field!(m::KaimonModel, field::Symbol)
     # Persist to extensions.json
     entries = load_extensions_config()
     for (i, e) in enumerate(entries)
-        norm = try; realpath(e.project_path); catch; e.project_path; end
-        ext_norm = try; realpath(old_entry.project_path); catch; old_entry.project_path; end
+        norm = normalize_path(e.project_path)
+        ext_norm = normalize_path(old_entry.project_path)
         if norm == ext_norm
             entries[i] = new_entry
             break

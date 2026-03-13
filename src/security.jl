@@ -71,8 +71,7 @@ Get the path to the global security configuration file.
 Returns `~/.config/kaimon/security.json`.
 """
 function get_global_security_config_path()
-    config_dir = joinpath(homedir(), ".config", "kaimon")
-    return joinpath(config_dir, "security.json")
+    return joinpath(kaimon_config_dir(), "security.json")
 end
 
 const PERSONALITY_EMOTICONS = Dict("dragon" => "🐉", "butterfly" => "🦋", "l33t" => "👾")
