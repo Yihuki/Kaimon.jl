@@ -149,6 +149,7 @@ end
     # Status
     total_tool_calls::Int = 0
     start_time::Float64 = time()
+    personality_icon::String = load_personality()
 
     # Config flow state machine
     config_flow::ConfigFlow = FLOW_IDLE
@@ -163,6 +164,7 @@ end
     client_target::Symbol = :claude
     client_scope::Symbol = :user
     gate_mirror_repl::Bool = false
+    editor::String = "vscode"  # Configured editor for file:line links
 
     # Flow result
     flow_message::String = ""
@@ -299,9 +301,9 @@ end
     # ── Collection Manager modal ──
     search_manage_open::Bool = false
     search_manage_selected::Int = 1
-    search_manage_pane::Union{ScrollPane,Nothing} = nothing  # ScrollPane for entries list
-    _search_manage_pane_synced::Int = 0  # entries count when pane was last built
-    _search_manage_pane_sel::Int = 0     # selected index when pane was last built
+    search_manage_table::Union{DataTable,Nothing} = nothing  # DataTable for entries list
+    _search_manage_table_synced::Int = 0  # entries count when table was last built
+    _search_manage_table_sel::Int = 0     # selected index when table was last built
     search_manage_entries::Vector{
         @NamedTuple{
             label::String,
@@ -327,7 +329,7 @@ end
     search_manage_add_phase::Int = 1     # 1=path input, 2=edit config before confirm
     search_manage_path_input::Any = nothing  # TextInput
     search_manage_configuring::Bool = false
-    search_manage_config_field::Int = 1  # 1=dirs, 2=exts
+    search_manage_config_field::Int = 1  # 1=dirs, 2=exts, 3=auto-detect, 4=save, 5=cancel
     search_manage_config_dirs::String = ""
     search_manage_config_exts::String = ""
     search_manage_config_path::String = ""   # project path being configured (add flow)
@@ -335,7 +337,8 @@ end
         type::String,
         dirs::Vector{String},
         extensions::Vector{String},
-    } = (type = "", dirs = String[], extensions = String[])
+        git_aware::Bool,
+    } = (type = "", dirs = String[], extensions = String[], git_aware = false)
 
     # ── Debug tab (tab 7) ──
     debug_state::Symbol = :idle           # :idle, :paused

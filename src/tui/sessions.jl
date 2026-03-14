@@ -59,7 +59,7 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
             conn.status == :stalled ? tstyle(:warning) :
             conn.status == :connecting ? tstyle(:warning) : tstyle(:error)
         dname = isempty(conn.display_name) ? conn.name : conn.display_name
-        agent_tag = conn.spawned_by == "agent" ? " ⚡" : ""
+        agent_tag = conn.spawned_by == "agent" ? " $(m.personality_icon)" : ""
         label = "$icon $dname$agent_tag"
         padded = rpad(label, 20)
         status_text = string(conn.status)
@@ -160,7 +160,7 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
             "off"
         end
         restart_str = conn.allow_restart ? "allowed" : "disabled"
-        spawned_str = conn.spawned_by == "agent" ? "agent ⚡" : "user"
+        spawned_str = conn.spawned_by == "agent" ? "agent $(m.personality_icon)" : "user"
         fields = [
             ("Name", dname),
             ("Status", string(conn.status)),

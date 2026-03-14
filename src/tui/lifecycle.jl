@@ -90,6 +90,7 @@ end
     _auto_index_on_connect!(project_path::String)
 
 Async function that auto-indexes a gate project on first connect.
+Only triggers for actual Julia projects (must have `Project.toml`).
 If the collection exists, does incremental sync; if not, detects project type
 and runs a full index with detected defaults.
 Uses the `_REINDEX_IN_PROGRESS` guard to prevent concurrent operations.
@@ -99,6 +100,21 @@ function _auto_index_on_connect!(project_path::String, render_mode::Bool = false
     if isempty(project_path) || project_path == "/"
         return
     end
+    # Only auto-index actual Julia projects (must have Project.toml)
+    if !isfile(joinpath(project_path, "Project.toml"))
+        return
+    end
+    _auto_index_project!(project_path)
+end
+
+"""
+    _auto_index_project!(project_path::String)
+
+Core async auto-index: sync or full-index a project in the background.
+Called by gate auto-connect (with Project.toml guard) and by approved-project
+indexing at startup (no guard needed — user already approved it).
+"""
+function _auto_index_project!(project_path::String)
     # Concurrent guard — skip if already reindexing this project
     already_running = lock(_REINDEX_LOCK) do
         if project_path in _REINDEX_IN_PROGRESS
@@ -155,7 +171,7 @@ function _auto_index_on_connect!(project_path::String, render_mode::Bool = false
                 _push_log!(:info, "Auto-index complete ($col_name)")
             end
         catch e
-            _push_log!(:warn, "Auto-index on connect failed: $(sprint(showerror, e))")
+            _push_log!(:warn, "Auto-index failed: $(sprint(showerror, e))")
         finally
             lock(_REINDEX_LOCK) do
                 delete!(_REINDEX_IN_PROGRESS, project_path)
@@ -171,7 +187,11 @@ function Tachikoma.init!(m::KaimonModel, _t::Tachikoma.Terminal)
     # The mock model already has everything set up.
     m._render_mode && return
 
-    set_theme!(KOKAKU)
+    try
+        Tachikoma.load_theme!()
+    catch
+        set_theme!(KOKAKU)
+    end
 
     # Open persistent log file
     _open_log_file!()
@@ -215,8 +235,24 @@ function Tachikoma.init!(m::KaimonModel, _t::Tachikoma.Terminal)
 
     m.gate_mirror_repl = get_gate_mirror_repl_preference()
 
+    # Load editor preference from global config
+    _cfg = load_global_config()
+    m.editor = _cfg !== nothing ? _cfg.editor : "vscode"
+
     # Load allowed projects config
     m.project_entries = load_projects_config()
+
+    # Auto-index approved projects in the background.  Each enabled project
+    # gets an incremental sync (or a fresh index if its collection doesn't
+    # exist yet).  Uses the same concurrency guard as gate auto-index so
+    # nothing runs twice if a REPL for the project also connects.
+    if !m._render_mode
+        for entry in m.project_entries
+            entry.enabled || continue
+            isdir(entry.project_path) || continue
+            _auto_index_project!(entry.project_path)
+        end
+    end
 
     # MCP server is started on the first view() tick so the TUI is already
     # rendering and can report status in the Server tab.
@@ -335,7 +371,7 @@ connections in `~/.cache/kaimon/sock/`.
 - `port::Int=2828`: Port for the MCP HTTP server
 - `theme::Symbol=:kokaku`: Tachikoma theme name
 """
-function tui(; port::Int = 2828, theme_name::Symbol = :kokaku)
+function tui(; port::Int = 2828, theme_name::Union{Symbol,Nothing} = nothing)
     if Threads.nthreads() < 2
         @warn """Kaimon TUI running with only 1 thread — UI may be unresponsive.
                  Start Julia with: julia -t auto
@@ -347,7 +383,9 @@ function tui(; port::Int = 2828, theme_name::Symbol = :kokaku)
         enable_markdown()
     catch
     end
-    set_theme!(theme_name)
+    if theme_name !== nothing
+        set_theme!(theme_name)
+    end
     model = KaimonModel(server_port = port)
 
     while true
@@ -367,7 +405,7 @@ function tui(; port::Int = 2828, theme_name::Symbol = :kokaku)
                 revised ? "Ctrl-U: Revise reload complete — restarting TUI" :
                 "Ctrl-U: Revise not available — restarting TUI",
             )
-            Base.invokelatest(set_theme!, theme_name)
+            # Theme is loaded from preferences in init!
             continue
         end
 

@@ -1877,7 +1877,8 @@ function _serve(;
     catch
         "⚡"
     end
-    printstyled("  $emoticon Kaimon gate "; color = :green, bold = true)
+    print("  $emoticon ")
+    printstyled("Kaimon gate "; color = :green, bold = true)
     printstyled("connected"; color = :green)
     printstyled(" ($name)\n"; color = :light_black)
     if _MIRROR_REPL[]
