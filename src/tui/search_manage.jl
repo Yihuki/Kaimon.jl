@@ -81,9 +81,9 @@ function _open_search_manage!(m::KaimonModel)
     m.search_manage_entries = entries
     m.search_manage_col_info = Dict{String,Dict}()
     m.search_manage_stale = Dict{String,Int}()
-    m.search_manage_pane = nothing
-    m._search_manage_pane_synced = 0
-    m._search_manage_pane_sel = 0
+    m.search_manage_table = nothing
+    m._search_manage_table_synced = 0
+    m._search_manage_table_sel = 0
 
     # Fire async task to gather Qdrant info + stale counts for all entries
     entry_data = [(e.collection, e.project_path) for e in entries if !isempty(e.collection)]
@@ -169,17 +169,12 @@ function _handle_search_manage_key!(m::KaimonModel, evt::KeyEvent)
         :escape => begin
             m.search_manage_open = false
         end
-        :up => begin
-            n > 0 && (
-                m.search_manage_selected =
-                    m.search_manage_selected <= 1 ? n : m.search_manage_selected - 1
-            )
-        end
-        :down => begin
-            n > 0 && (
-                m.search_manage_selected =
-                    m.search_manage_selected >= n ? 1 : m.search_manage_selected + 1
-            )
+        :up || :down || :pageup || :pagedown || :home || :end_key => begin
+            dt = m.search_manage_table
+            if dt !== nothing && n > 0
+                handle_key!(dt, evt)
+                m.search_manage_selected = dt.selected
+            end
         end
         :char => begin
             sel = clamp(m.search_manage_selected, 1, max(1, n))
@@ -216,7 +211,7 @@ function _start_add_project!(m::KaimonModel)
     m.search_manage_adding = true
     m.search_manage_add_phase = 1
     m.search_manage_path_input = TextInput(text = "", label = "Path: ", tick = m.tick)
-    m.search_manage_detected = (type = "", dirs = String[], extensions = String[])
+    m.search_manage_detected = (type = "", dirs = String[], extensions = String[], git_aware = false)
     m.search_manage_config_path = ""
     m.search_manage_config_dirs = ""
     m.search_manage_config_exts = ""
@@ -229,7 +224,7 @@ function _handle_search_manage_add!(m::KaimonModel, evt::KeyEvent)
         if m.search_manage_add_phase == 2
             # Go back to path input
             m.search_manage_add_phase = 1
-            m.search_manage_detected = (type = "", dirs = String[], extensions = String[])
+            m.search_manage_detected = (type = "", dirs = String[], extensions = String[], git_aware = false)
             return
         end
         m.search_manage_adding = false
@@ -263,8 +258,8 @@ function _handle_add_path_input!(m::KaimonModel, evt::KeyEvent)
         end
         path = abspath(path)
 
-        # Detect project type and transition to phase 2 with editable fields
-        detected = detect_project_type(path)
+        # Auto-detect project config and transition to phase 2 with editable fields
+        detected = auto_detect_project_config(path)
         m.search_manage_detected = detected
         m.search_manage_config_path = path
         m.search_manage_config_dirs =
@@ -283,21 +278,33 @@ function _handle_add_config_edit!(m::KaimonModel, evt::KeyEvent)
     field = m.search_manage_config_field
 
     if evt.key == :tab || evt.key == :down
-        m.search_manage_config_field = field >= 4 ? 1 : field + 1
+        m.search_manage_config_field = field >= 5 ? 1 : field + 1
         return
     elseif evt.key == :up
-        m.search_manage_config_field = field <= 1 ? 4 : field - 1
+        m.search_manage_config_field = field <= 1 ? 5 : field - 1
         return
     end
 
     if evt.key == :enter
-        if field == 4
+        if field == 5
             # Cancel button
             m.search_manage_add_phase = 1
-            m.search_manage_detected = (type = "", dirs = String[], extensions = String[])
+            m.search_manage_detected = (type = "", dirs = String[], extensions = String[], git_aware = false)
             return
         end
-        # Save (fields 1, 2, or 3)
+        if field == 3
+            # Auto-detect button
+            path = m.search_manage_config_path
+            if !isempty(path) && isdir(path)
+                detected = auto_detect_project_config(path)
+                m.search_manage_detected = detected
+                m.search_manage_config_dirs =
+                    join([_make_relative(d, path) for d in detected.dirs], ", ")
+                m.search_manage_config_exts = join(detected.extensions, ", ")
+            end
+            return
+        end
+        # Save (fields 1, 2, or 4)
         path = m.search_manage_config_path
         dirs_raw = filter(!isempty, strip.(split(m.search_manage_config_dirs, ",")))
         exts_raw = filter(!isempty, strip.(split(m.search_manage_config_exts, ",")))
@@ -329,7 +336,7 @@ function _handle_add_config_edit!(m::KaimonModel, evt::KeyEvent)
         # Reset and refresh
         m.search_manage_adding = false
         m.search_manage_path_input = nothing
-        m.search_manage_detected = (type = "", dirs = String[], extensions = String[])
+        m.search_manage_detected = (type = "", dirs = String[], extensions = String[], git_aware = false)
         _open_search_manage!(m)
         return
     end
@@ -352,7 +359,7 @@ function _start_configure_project!(m::KaimonModel, entry)
     m.search_manage_configuring = true
     m.search_manage_config_field = 1
 
-    # Load current config from registry, or detect if not registered
+    # Load current config from registry, or auto-detect if not registered
     config = get_project_config(entry.project_path)
     if config !== nothing
         dirs = get(config, "dirs", String[])
@@ -360,8 +367,10 @@ function _start_configure_project!(m::KaimonModel, entry)
         m.search_manage_config_dirs =
             join([_make_relative(d, entry.project_path) for d in dirs], ", ")
         m.search_manage_config_exts = join(exts, ", ")
+        m.search_manage_detected = (type = "", dirs = String[], extensions = String[], git_aware = false)
     else
-        detected = detect_project_type(entry.project_path)
+        detected = auto_detect_project_config(entry.project_path)
+        m.search_manage_detected = detected
         m.search_manage_config_dirs =
             join([_make_relative(d, entry.project_path) for d in detected.dirs], ", ")
         m.search_manage_config_exts = join(detected.extensions, ", ")
@@ -395,20 +404,29 @@ function _handle_search_manage_configure!(m::KaimonModel, evt::KeyEvent)
     field = m.search_manage_config_field
 
     if evt.key == :tab || evt.key == :down
-        m.search_manage_config_field = field >= 4 ? 1 : field + 1
+        m.search_manage_config_field = field >= 5 ? 1 : field + 1
         return
     elseif evt.key == :up
-        m.search_manage_config_field = field <= 1 ? 4 : field - 1
+        m.search_manage_config_field = field <= 1 ? 5 : field - 1
         return
     end
 
     if evt.key == :enter
-        if field == 4
+        if field == 5
             # Cancel button
             m.search_manage_configuring = false
             return
         end
-        # Save (fields 1, 2, or 3)
+        if field == 3
+            # Auto-detect button
+            detected = auto_detect_project_config(entry.project_path)
+            m.search_manage_detected = detected
+            m.search_manage_config_dirs =
+                join([_make_relative(d, entry.project_path) for d in detected.dirs], ", ")
+            m.search_manage_config_exts = join(detected.extensions, ", ")
+            return
+        end
+        # Save (fields 1, 2, or 4)
         dirs_raw = filter(!isempty, strip.(split(m.search_manage_config_dirs, ",")))
         exts_raw = filter(!isempty, strip.(split(m.search_manage_config_exts, ",")))
 

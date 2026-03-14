@@ -358,19 +358,7 @@ function _sync_search_results_pane!(m::KaimonModel)
         else
             "win", :border
         end
-        # Build vscode:// hyperlink for the file location
-        vscode_url = ""
-        if !isempty(abs_file)
-            vscode_url = "vscode://file/$(abs_file)"
-            if start_line > 0
-                vscode_url *= ":$(start_line)"
-            end
-        end
-        loc_style = if isempty(vscode_url)
-            tstyle(:text_dim, italic = true)
-        else
-            tstyle(:accent, italic = true, underline = true, hyperlink = vscode_url)
-        end
+        loc_style = file_link_style(abs_file; line=start_line)
         push!(
             lines,
             [
