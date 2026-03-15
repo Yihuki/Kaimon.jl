@@ -317,16 +317,53 @@ function _push_tool_result!(r::ToolCallResult)
         _LAST_TOOL_ERROR[] = t
     end
     _ECG_NEW_COMPLETIONS[] += 1
-    # Persist to database (fire-and-forget)
-    _persist_tool_call!(r)
 end
 
-"""Persist a tool call result to the SQLite analytics database."""
-function _persist_tool_call!(r::ToolCallResult)
+"""
+Record a tool call as 'running' in the SQLite database at execution start.
+Returns the request_id (UUID string) for later update, or "" on failure.
+"""
+function _persist_tool_start!(tool_name::String, args_json::String, session_key::String)::String
     db = Database.DB[]
-    db === nothing && return
+    db === nothing && return ""
+    rid = string(UUIDs.uuid4())
     try
-        # Parse duration string back to ms
+        Database.DBInterface.execute(
+            db,
+            """
+    INSERT INTO tool_executions (
+        session_key, request_id, tool_name, request_time,
+        duration_ms, input_size, output_size, arguments,
+        status, result_summary
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+""",
+            (
+                session_key,
+                rid,
+                tool_name,
+                Dates.format(now(), dateformat"yyyy-mm-dd HH:MM:SS"),
+                0.0,
+                sizeof(args_json),
+                0,
+                args_json,
+                "running",
+                "",
+            ),
+        )
+    catch e
+        @debug "Failed to persist tool start" exception = (e, catch_backtrace())
+        return ""
+    end
+    return rid
+end
+
+"""
+Update a previously-recorded tool call with its final result.
+"""
+function _persist_tool_complete!(db_request_id::String, r::ToolCallResult)
+    db = Database.DB[]
+    (db === nothing || isempty(db_request_id)) && return
+    try
         dur_ms = if endswith(r.duration_str, "ms")
             parse(Float64, r.duration_str[1:end-2])
         elseif endswith(r.duration_str, "s")
@@ -338,27 +375,20 @@ function _persist_tool_call!(r::ToolCallResult)
         Database.DBInterface.execute(
             db,
             """
-    INSERT INTO tool_executions (
-        session_key, request_id, tool_name, request_time,
-        duration_ms, input_size, output_size, arguments,
-        status, result_summary
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    UPDATE tool_executions SET
+        duration_ms = ?, output_size = ?, status = ?, result_summary = ?
+    WHERE request_id = ?
 """,
             (
-                r.session_key,
-                string(UUIDs.uuid4()),
-                r.tool_name,
-                Dates.format(r.timestamp, dateformat"yyyy-mm-dd HH:MM:SS"),
                 dur_ms,
-                sizeof(r.args_json),
                 sizeof(r.result_text),
-                r.args_json,
                 r.success ? "success" : "error",
                 summary,
+                db_request_id,
             ),
         )
     catch e
-        @debug "Failed to persist tool call" exception = (e, catch_backtrace())
+        @debug "Failed to persist tool completion" exception = (e, catch_backtrace())
     end
 end
 

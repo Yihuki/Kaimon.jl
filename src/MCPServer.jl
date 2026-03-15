@@ -1152,10 +1152,13 @@ function create_handler(
 
                     # Always push activity events in TUI mode (including ex, etc.)
                     inflight_id = 0
+                    args_json_ns = JSON.json(args)
+                    sk_ns = string(get(args, "ses", get(args, "session", "")))
+                    db_request_id_ns = ""
                     if tui_mode
                         _push_activity!(:tool_start, tool.name, "", "")
-                        sk = string(get(args, "ses", get(args, "session", "")))
-                        inflight_id = _push_inflight_start!(tool.name, JSON.json(args), sk)
+                        inflight_id = _push_inflight_start!(tool.name, args_json_ns, sk_ns)
+                        db_request_id_ns = _persist_tool_start!(tool.name, args_json_ns, sk_ns)
                     end
 
                     start_time = time()
@@ -1204,24 +1207,13 @@ function create_handler(
                         end
                     end
 
-                    # Push full tool result for TUI Activity inspection
+                    # Push full tool result for TUI Activity inspection + update DB
                     if tui_mode
                         rt = string(result_text)
-                        # Detect error strings returned without throwing
                         ok = tool_ok && !startswith(rt, "ERROR:")
-                        # Extract session key from tool args (ses for ex, session for others)
-                        sk = string(get(args, "ses", get(args, "session", "")))
-                        _push_tool_result!(
-                            ToolCallResult(
-                                now(),
-                                tool.name,
-                                JSON.json(args),
-                                rt,
-                                time_str,
-                                ok,
-                                sk,
-                            ),
-                        )
+                        tcr = ToolCallResult(now(), tool.name, args_json_ns, rt, time_str, ok, sk_ns)
+                        _push_tool_result!(tcr)
+                        _persist_tool_complete!(db_request_id_ns, tcr)
                     end
 
                     response = Dict(
@@ -1448,8 +1440,10 @@ function _handle_gate_tool_sse(
     # Push activity events in TUI mode
     _push_activity!(:tool_start, tool.name, "", "")
     sk = string(get(args, "ses", get(args, "session", "")))
-    inflight_id = _push_inflight_start!(tool.name, JSON.json(args), sk)
+    args_json = JSON.json(args)
+    inflight_id = _push_inflight_start!(tool.name, args_json, sk)
     _sse_inflight_id[] = inflight_id
+    db_request_id = _persist_tool_start!(tool.name, args_json, sk)
     start_time = time()
     tool_ok = true
 
@@ -1493,7 +1487,7 @@ function _handle_gate_tool_sse(
         _push_inflight_done!(inflight_id)
     end
 
-    # Push tool result for TUI Activity inspection
+    # Push tool result for TUI Activity inspection + update DB record
     try
         elapsed = time() - start_time
         time_str =
@@ -1501,9 +1495,9 @@ function _handle_gate_tool_sse(
         rt = string(result_text)
         ok = tool_ok && !startswith(rt, "ERROR:")
         sk = string(get(args, "ses", get(args, "session", "")))
-        _push_tool_result!(
-            ToolCallResult(now(), tool.name, JSON.json(args), rt, time_str, ok, sk, _sse_eval_id[]),
-        )
+        tcr = ToolCallResult(now(), tool.name, args_json, rt, time_str, ok, sk, _sse_eval_id[])
+        _push_tool_result!(tcr)
+        _persist_tool_complete!(db_request_id, tcr)
     catch e
         _push_log!(:warn, "Failed to push tool result for TUI: $(sprint(showerror, e))")
     end
