@@ -179,17 +179,18 @@ function trigger_backtrace(conn::REPLConnection)::Union{String,Nothing}
     bt_path = joinpath(Gate.SOCK_DIR, "$(conn.session_id)-backtrace.txt")
     # Remove stale file from previous trigger
     rm(bt_path; force=true)
-    # Send the signal
+    # Send SIGINFO (macOS) or SIGUSR1 (Linux) via POSIX kill(2)
     sig = Sys.isbsd() ? 29 : 10
-    try
-        ccall(:uv_kill, Cint, (Cint, Cint), conn.pid, sig)
-    catch
+    ret = ccall(:kill, Cint, (Cint, Cint), conn.pid, sig)
+    if ret != 0
+        @debug "kill() failed" pid=conn.pid sig errno=Base.Libc.errno()
         return nothing
     end
     # Poll for the file (profile peek takes ~1s by default + write time)
-    for _ in 1:30  # up to 3s
+    # Wait up to 5s — peek_duration default is 1s but writing can take time
+    for _ in 1:50
         if isfile(bt_path) && filesize(bt_path) > 0
-            sleep(0.2)  # let it finish writing
+            sleep(0.3)  # let it finish writing
             try
                 txt = read(bt_path, String)
                 conn.backtrace_sample = txt

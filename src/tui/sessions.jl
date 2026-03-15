@@ -285,7 +285,13 @@ end
 
 function _view_session_terminal(m::KaimonModel, area::Rect, buf::Buffer)
     tw = m.session_terminal
-    drain!(tw)  # drain PTY output, feed VT parser
+    try
+        drain!(tw)  # drain PTY output, feed VT parser
+    catch e
+        _push_log!(:warn, "Terminal drain error: $(sprint(showerror, e))")
+        _close_session_terminal!(m)
+        return
+    end
 
     block = Block(
         title = "Session Console [$(m.session_terminal_key)]  [Esc] close",
@@ -293,7 +299,12 @@ function _view_session_terminal(m::KaimonModel, area::Rect, buf::Buffer)
         title_style = tstyle(:accent, bold = true),
     )
     inner = render(block, area, buf)
-    render(tw, inner, buf)
+    try
+        render(tw, inner, buf)
+    catch e
+        _push_log!(:warn, "Terminal render error: $(sprint(showerror, e))")
+        _close_session_terminal!(m)
+    end
 end
 
 """Open a full-screen terminal widget for an agent-spawned session's PTY."""
@@ -302,11 +313,16 @@ function _open_session_terminal!(m::KaimonModel, ms::ManagedSession)
     Tachikoma.pty_alive(ms.pty) || return
     reopen = m.session_terminal_key == ms.session_key
     _close_session_terminal!(m)
-    m.session_terminal = TerminalWidget(ms.pty; show_scrollbar = true, focused = true)
-    m.session_terminal_key = ms.session_key
-    m.session_terminal_open = true
-    # On re-open, nudge the REPL so it prints a fresh prompt
-    reopen && Tachikoma.pty_write(ms.pty, "\n")
+    try
+        m.session_terminal = TerminalWidget(ms.pty; show_scrollbar = true, focused = true)
+        m.session_terminal_key = ms.session_key
+        m.session_terminal_open = true
+        # On re-open, nudge the REPL so it prints a fresh prompt
+        reopen && Tachikoma.pty_write(ms.pty, "\n")
+    catch e
+        _push_log!(:warn, "Failed to open session terminal: $(sprint(showerror, e))")
+        _close_session_terminal!(m)
+    end
 end
 
 """Close the session terminal overlay without killing the PTY."""

@@ -43,10 +43,18 @@ function _install_peek_report_override(session_id::String)
             try
                 open(bt_path, "w") do io
                     Base.invokelatest(Profile.print, io; groupby = [:thread, :task])
+                    if position(io) == 0
+                        # Profile.print produced no output — write a diagnostic
+                        println(io, "(no profiling samples collected)")
+                    end
                 end
             catch e
-                # Fall back to stderr if file write fails
-                @debug "peek_report file write failed" exception = e
+                try
+                    open(bt_path, "w") do io
+                        println(io, "peek_report error: $(sprint(showerror, e))")
+                    end
+                catch
+                end
             end
         end
     catch
@@ -1092,9 +1100,6 @@ function _eval_with_capture(expr)
             while !eof(stdout_read)
                 line = readline(stdout_read; keep = true)
                 push!(stdout_content, line)
-                # Echo to original stdout for REPL visibility.
-                # Guard against broken pipes (e.g. when a Tachikoma pixel renderer
-                # has taken over the terminal and its internal pipe has closed).
                 if _MIRROR_REPL[]
                     try
                         write(orig_stdout, line)
@@ -1103,7 +1108,6 @@ function _eval_with_capture(expr)
                         e isa Base.IOError && (_MIRROR_REPL[] = false)
                     end
                 end
-                # Publish to TUI stream
                 _publish_stream("stdout", line)
             end
         catch e
@@ -1159,12 +1163,20 @@ function _eval_with_capture(expr)
         catch
             redirect_stderr(devnull)
         end
-        close(stdout_write)
-        close(stderr_write)
-        wait(stdout_task)
-        wait(stderr_task)
-        close(stdout_read)
-        close(stderr_read)
+        # Close pipes and wait for drain tasks asynchronously.
+        # Blocking here would delay the eval response, and with @async
+        # drain tasks on the same thread the close→EOF→drain exit path
+        # needs the event loop to run (which it can't if we're blocking).
+        @async begin
+            try; close(stdout_write); catch; end
+            try; close(stderr_write); catch; end
+            try; wait(stdout_task); catch; end
+            try; wait(stderr_task); catch; end
+            try; close(stdout_read); catch; end
+            try; close(stderr_read); catch; end
+        end
+        # Yield to let drain tasks collect any final buffered output
+        yield()
     end
 
     # Format value representation

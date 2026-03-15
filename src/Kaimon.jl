@@ -1174,6 +1174,8 @@ end
 
 const GATE_MODE = Ref{Bool}(false)
 const GATE_CONN_MGR = Ref{Union{Nothing,ConnectionManager}}(nothing)
+const TUI_MODEL = Ref{Any}(nothing)
+const TUI_LAST_FRAME = Ref{String}("")
 
 # ── Debug consent coordination ────────────────────────────────────────────
 # MCP tool writes a request, TUI reads it and shows consent prompt.
@@ -1525,6 +1527,7 @@ function collect_tools()::Vector{MCPTool}
     return MCPTool[
         ping_tool,
         server_log_tool,
+        tui_screenshot_tool,
         usage_instructions_tool,
         usage_quiz_tool,
         tool_help_tool,

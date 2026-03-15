@@ -369,11 +369,8 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
     # ── Status bar ──
     n_sessions, n_exts = if m.conn_mgr !== nothing
         conns = connected_sessions(m.conn_mgr)
-        ext_namespaces = Set(
-            ext.config.manifest.namespace for ext in get_managed_extensions()
-        )
-        ns = count(c -> c.spawned_by != "extension" && !(c.namespace in ext_namespaces), conns)
-        ne = count(c -> c.spawned_by == "extension" || c.namespace in ext_namespaces, conns)
+        ns = count(c -> c.spawned_by != "extension", conns)
+        ne = count(c -> c.spawned_by == "extension", conns)
         (ns, ne)
     else
         (0, 0)
@@ -450,6 +447,11 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
         end
         m.quit_confirm_modal.tick = m.tick
         render(m.quit_confirm_modal, f.area, buf)
+    end
+
+    # Capture text snapshot every ~1s (every 30 frames at 30fps) for the screenshot tool
+    if m.tick % 30 == 0
+        TUI_LAST_FRAME[] = buffer_to_text(buf, f.area)
     end
 end
 

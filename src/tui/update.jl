@@ -542,27 +542,39 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
                             cancel_label = "",
                             selected = :confirm,
                         )
-                        @async begin
-                            name = conn.name
-                            bt = GateClient.trigger_backtrace(conn)
-                            m.backtrace_collecting = false
-                            if bt !== nothing
-                                m.backtrace_result = bt
-                                m.backtrace_modal = nothing
-                                sp = ScrollPane(; following = false)
-                                sp.block = Block(
-                                    title = "Profile Trace — $name  [s] save  [Esc] close",
-                                    border_style = tstyle(:accent),
-                                    title_style = tstyle(:accent, bold = true),
-                                )
-                                for line in split(bt, '\n')
-                                    push_line!(sp, [Span(line, tstyle(:text))])
+                        Threads.@spawn begin
+                            try
+                                name = conn.name
+                                bt = trigger_backtrace(conn)
+                                m.backtrace_collecting = false
+                                if bt !== nothing
+                                    m.backtrace_result = bt
+                                    m.backtrace_modal = nothing
+                                    sp = ScrollPane(Vector{Span}[]; following = false)
+                                    sp.block = Block(
+                                        title = "Profile Trace — $name  [s] save  [Esc] close",
+                                        border_style = tstyle(:accent),
+                                        title_style = tstyle(:accent, bold = true),
+                                    )
+                                    for line in split(bt, '\n')
+                                        push_line!(sp, [Span(line, tstyle(:text))])
+                                    end
+                                    m.backtrace_viewer = sp
+                                else
+                                    m.backtrace_modal = Modal(
+                                        title = "Profile Trace",
+                                        message = "Timed out — no trace received.",
+                                        confirm_label = "OK",
+                                        cancel_label = "",
+                                        selected = :confirm,
+                                    )
                                 end
-                                m.backtrace_viewer = sp
-                            else
+                            catch e
+                                _push_log!(:warn, "Profile trace error: $(sprint(showerror, e))")
+                                m.backtrace_collecting = false
                                 m.backtrace_modal = Modal(
                                     title = "Profile Trace",
-                                    message = "Timed out — no trace received.",
+                                    message = "Error: $(sprint(showerror, e))",
                                     confirm_label = "OK",
                                     cancel_label = "",
                                     selected = :confirm,

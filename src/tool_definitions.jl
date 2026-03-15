@@ -157,11 +157,11 @@ ping_tool = @mcp_tool(
                 status *= "\n  $icon $key $dname ($(conn.status), Julia $(conn.julia_version), PID $(conn.pid)$tools_info$stalled_info)"
                 status *= "\n    project: $(conn.project_path)"
             end
-            # Extension session summary
+            # Extension session summary (internal only, not addressable via tools)
             if !isempty(ext_conns)
                 active_ext = filter(c -> c.status == :connected || c.status == :evaluating, ext_conns)
                 names = [isempty(c.namespace) ? c.display_name : c.namespace for c in active_ext]
-                status *= "\nExtensions: $(length(active_ext)) active ($(join(names, ", ")))"
+                status *= "\nExtensions (internal, not for agent use): $(length(active_ext)) active ($(join(names, ", ")))"
             end
         end
 
@@ -313,6 +313,21 @@ server_log_tool = @mcp_tool(
         isempty(all_lines) && return "No log entries found matching the specified criteria."
         return join(all_lines, "\n")
     end
+)
+
+tui_screenshot_tool = @mcp_tool(
+    :tui_screenshot,
+    "Capture a text screenshot of the Kaimon TUI. Returns the current rendered view as plain text, including borders, status indicators, and layout. Updated every ~1 second. Useful for analyzing whitespace usage, widget layout, and visual appearance.",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(),
+        "required" => [],
+    ),
+    args -> begin
+        text = TUI_LAST_FRAME[]
+        isempty(text) && return "No TUI frame captured yet (TUI may not be running)"
+        return text
+    end,
 )
 
 usage_instructions_tool =

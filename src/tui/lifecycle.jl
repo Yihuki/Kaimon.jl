@@ -187,6 +187,8 @@ function Tachikoma.init!(m::KaimonModel, _t::Tachikoma.Terminal)
     # The mock model already has everything set up.
     m._render_mode && return
 
+    TUI_MODEL[] = m
+
     try
         Tachikoma.load_theme!()
     catch
