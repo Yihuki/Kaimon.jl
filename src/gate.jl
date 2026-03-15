@@ -1060,8 +1060,11 @@ function _publish_stream(channel::String, data; request_id::String = "")
                 (channel = channel, data = data, request_id = request_id)
             serialize(io, msg)
             send(pub, Message(take!(io)))
-        catch
-            # Non-critical — subscriber may not be connected
+        catch e
+            # Log failures for eval lifecycle messages — the caller hangs if these are lost
+            if channel in ("eval_complete", "eval_error", "tool_complete", "tool_error")
+                @error "Failed to publish $channel (request_id=$request_id)" exception = e
+            end
         end
     end
 end
@@ -1452,7 +1455,20 @@ function handle_message(request::NamedTuple)
         Threads.@spawn begin
             try
                 result = gate_eval(code; display_code = display_code)
-                _publish_stream("eval_complete", _serialize_result(result); request_id)
+                try
+                    _publish_stream("eval_complete", _serialize_result(result); request_id)
+                catch pub_err
+                    # Serialization of result failed — send a plain-text fallback
+                    @error "Failed to serialize eval result" exception = pub_err
+                    fallback = (
+                        stdout = "",
+                        stderr = "",
+                        value_repr = "(result could not be serialized: $(sprint(showerror, pub_err)))",
+                        exception = nothing,
+                        backtrace = nothing,
+                    )
+                    _publish_stream("eval_complete", _serialize_result(fallback); request_id)
+                end
             catch e
                 error_result = (
                     stdout = "",
