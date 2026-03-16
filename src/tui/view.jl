@@ -1,5 +1,14 @@
 # ── View ──────────────────────────────────────────────────────────────────────
 
+"""Write a sequence of (text, style) pairs at (x, y), advancing x after each."""
+function _write_spans!(buf::Buffer, x::Int, y::Int, parts)
+    cx = x
+    for (text, style) in parts
+        set_string!(buf, cx, y, text, style)
+        cx += length(text)
+    end
+end
+
 """
     file_link_style(path::String; line::Int=0) -> Style
 
@@ -476,42 +485,34 @@ function view_server(m::KaimonModel, area::Rect, f::Frame)
     if si.width >= 4
         y = si.y
         x = si.x + 1
+        sep = " · "
+        dim = tstyle(:text_dim)
+        txt = tstyle(:text)
 
-        status_icon = if m.server_running
-            "●"
-        elseif m.server_started
-            "○"
-        else
-            "◌"
-        end
-        status_text = if m.server_running
-            "running"
-        elseif m.server_started
-            "stopped"
-        else
-            "starting…"
-        end
+        status_icon = m.server_running ? "●" : m.server_started ? "○" : "◌"
+        status_text = m.server_running ? "running" : m.server_started ? "stopped" : "starting…"
         status_style = m.server_running ? tstyle(:success) : tstyle(:error)
-
-        set_string!(buf, x, y, "$status_icon ", status_style)
-        set_string!(buf, x + 2, y, "MCP Server", tstyle(:text))
-        y += 1
-        set_string!(buf, x, y, rpad("Port", 14), tstyle(:text_dim))
-        set_string!(buf, x + 14, y, string(m.server_port), tstyle(:text))
-        y += 1
-        set_string!(buf, x, y, rpad("Status", 14), tstyle(:text_dim))
-        set_string!(buf, x + 14, y, status_text, status_style)
-        y += 1
         n_conns = m.conn_mgr !== nothing ? length(connected_sessions(m.conn_mgr)) : 0
-        set_string!(buf, x, y, rpad("Gate", 14), tstyle(:text_dim))
-        set_string!(buf, x + 14, y, "$n_conns REPL sessions", tstyle(:text))
-        y += 1
-        set_string!(buf, x, y, rpad("Uptime", 14), tstyle(:text_dim))
-        set_string!(buf, x + 14, y, format_uptime(time() - m.start_time), tstyle(:text))
-        y += 1
-        set_string!(buf, x, y, rpad("Tool Calls", 14), tstyle(:text_dim))
-        set_string!(buf, x + 14, y, string(m.total_tool_calls), tstyle(:text))
 
+        # Row 1: status + port + uptime
+        _write_spans!(buf, x, y, [
+            (status_icon * " ", status_style),
+            ("MCP Server", txt),
+            (sep, dim),
+            (":", dim), (string(m.server_port), txt),
+            (sep, dim),
+            (status_text, status_style),
+            (sep, dim),
+            ("⏱ ", dim), (format_uptime(time() - m.start_time), txt),
+        ])
+        y += 1
+
+        # Row 2: gate + tools
+        _write_spans!(buf, x, y, [
+            ("Gate: ", dim), ("$n_conns sessions", txt),
+            (sep, dim),
+            ("Tool Calls: ", dim), (string(m.total_tool_calls), txt),
+        ])
     end
 
     # ── Bottom: Server log (ScrollPane) ──

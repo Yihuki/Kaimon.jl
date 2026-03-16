@@ -35,15 +35,6 @@ function view_search(m::KaimonModel, area::Rect, buf::Buffer)
     end
 end
 
-"""Write a sequence of (text, style) pairs at (x, y), advancing x after each."""
-function _write_spans!(buf::Buffer, x::Int, y::Int, parts)
-    cx = x
-    for (text, style) in parts
-        set_string!(buf, cx, y, text, style)
-        cx += length(text)
-    end
-end
-
 """Pane 1: Health status, collection selector, filter."""
 function _view_search_status(m::KaimonModel, area::Rect, buf::Buffer)
     blk = Block(
