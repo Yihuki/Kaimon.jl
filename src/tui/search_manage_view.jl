@@ -47,7 +47,7 @@ function _view_search_manage(m::KaimonModel, area::Rect, buf::Buffer)
     # Clear interior
     for row = inner.y:bottom(inner)
         for col = inner.x:right(inner)
-            set_char!(buf, col, row, ' ', Style())
+            set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
         end
     end
 

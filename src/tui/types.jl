@@ -131,8 +131,7 @@ end
     result_word_wrap::Bool = true   # word wrap in detail panel
     detail_paragraph::Union{Paragraph,Nothing} = nothing  # cached for scroll state
     _detail_for_result::Int = -1   # which selected_result the paragraph was built for
-    _activity_list_widget::Union{SelectableList,Nothing} = nothing  # cached for mouse handling
-    _activity_list_offset::Int = 0          # scroll offset of the SelectableList
+    activity_table::Union{DataTable,Nothing} = nothing  # DataTable for tool call list
     _activity_detail_area::Rect = Rect()   # cached inner area of detail pane
 
     # In-flight tool calls — currently executing, shown at top of Activity list
@@ -274,7 +273,7 @@ end
 
     # ── Search tab (tab 7) ──
     search_layout::ResizableLayout =
-        ResizableLayout(Vertical, [Fixed(11), Fixed(3), Fill()])
+        ResizableLayout(Vertical, [Fixed(6), Fixed(3), Fill()])
     search_qdrant_up::Bool = false
     search_ollama_up::Bool = false
     search_model_available::Bool = false
@@ -286,6 +285,8 @@ end
     search_query_editing::Bool = false
     search_results::Vector{Dict} = Dict[]
     search_results_pane::Union{ScrollPane,Nothing} = nothing
+    search_collection_picker_open::Bool = false  # popup collection selector
+    search_collection_delete_confirm::Bool = false  # confirm delete in picker
     search_chunk_type::String = "all"       # "all" / "definitions" / "windows"
     search_result_count::Int = 10
     search_embedding_model::String = "qwen3-embedding:0.6b"

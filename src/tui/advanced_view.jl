@@ -32,7 +32,7 @@ function _view_scenario_modal(m::KaimonModel, mx, base_y, mw, max_h, buf::Buffer
 
     for row = inner.y:bottom(inner)
         for col = inner.x:right(inner)
-            set_char!(buf, col, row, ' ', Style())
+            set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
         end
     end
 
@@ -109,7 +109,7 @@ function _view_session_modal(m::KaimonModel, mx, base_y, mw, max_h, buf::Buffer)
 
     for row = inner.y:bottom(inner)
         for col = inner.x:right(inner)
-            set_char!(buf, col, row, ' ', Style())
+            set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
         end
     end
 
@@ -162,7 +162,7 @@ function _view_tool_modal(m::KaimonModel, mx, base_y, mw, max_h, buf::Buffer)
 
     for row = inner.y:bottom(inner)
         for col = inner.x:right(inner)
-            set_char!(buf, col, row, ' ', Style())
+            set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
         end
     end
 
@@ -257,7 +257,7 @@ function _view_stress_code_editor(m::KaimonModel, area::Rect, buf::Buffer)
     # Clear interior
     for row = inner.y:bottom(inner)
         for col = inner.x:right(inner)
-            set_char!(buf, col, row, ' ', Style())
+            set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
         end
     end
 
@@ -457,7 +457,7 @@ function _view_agent_horde(
     else
         for row = inner.y:bottom(inner)
             for col = inner.x:right(inner)
-                set_char!(buf, col, row, ' ', Style())
+                set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
             end
         end
     end

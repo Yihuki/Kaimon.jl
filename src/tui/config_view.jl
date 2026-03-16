@@ -220,7 +220,7 @@ function view_config_flow(m::KaimonModel, area::Rect, buf::Buffer)
         if inner.width >= 4
             for row = inner.y:bottom(inner)
                 for col = inner.x:right(inner)
-                    set_char!(buf, col, row, ' ', Style())
+                    set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
                 end
             end
             y = inner.y
@@ -351,7 +351,7 @@ function _render_launch_config_modal(m::KaimonModel, buf::Buffer, area::Rect)
     # Clear interior
     for row = inner.y:bottom(inner)
         for col = inner.x:right(inner)
-            set_char!(buf, col, row, ' ', Style())
+            set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
         end
     end
 
@@ -432,7 +432,7 @@ function _render_text_input_modal(
     # Clear interior
     for row = inner.y:bottom(inner)
         for col = inner.x:right(inner)
-            set_char!(buf, col, row, ' ', Style())
+            set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
         end
     end
 
@@ -484,7 +484,7 @@ function _render_selection_modal(
     # Clear interior
     for row = inner.y:bottom(inner)
         for col = inner.x:right(inner)
-            set_char!(buf, col, row, ' ', Style())
+            set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
         end
     end
 
@@ -540,7 +540,7 @@ function _render_result_modal(
     # Clear interior
     for row = inner.y:bottom(inner)
         for col = inner.x:right(inner)
-            set_char!(buf, col, row, ' ', Style())
+            set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
         end
     end
 

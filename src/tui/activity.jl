@@ -54,6 +54,35 @@ function _session_display_name(session_key::String)::String
     return isempty(conn.display_name) ? conn.name : conn.display_name
 end
 
+_truncate(s::AbstractString, n::Int) = length(s) > n ? s[1:prevind(s, n)] * "…" : String(s)
+
+function _ex_preview(r::ToolCallResult)
+    prefix = isempty(r.eval_id) ? "" : "$(r.eval_id) "
+    try
+        args = JSON.parse(r.args_json)
+        code = get(args, "e", nothing)
+        code === nothing && return prefix * _truncate(r.result_text, 40)
+        code_str = replace(strip(string(code)), r"\s+" => " ")
+        return _truncate(prefix * code_str, 50)
+    catch
+        return _truncate(prefix * r.result_text, 40)
+    end
+end
+
+function _tool_preview(r::ToolCallResult)
+    try
+        args = JSON.parse(r.args_json)
+        parts = String[]
+        for (k, v) in args
+            vs = v isa AbstractString ? v : string(v)
+            push!(parts, "$k=$(first(vs, 20))")
+        end
+        return _truncate(join(parts, " "), 50)
+    catch
+        return _truncate(r.result_text, 40)
+    end
+end
+
 """Refresh analytics data from the database (cached for 30s unless forced)."""
 function _refresh_analytics!(m::KaimonModel; force::Bool = false)
     db = Database.DB[]
@@ -306,8 +335,13 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
         m.detail_paragraph = nothing
     end
 
-    # ── Top pane: tool call list (in-flight at top, then completed newest-first) ──
-    items = ListItem[]
+    # ── Top pane: tool call DataTable ──
+    col_times = Any[]
+    col_tools = Any[]
+    col_sessions = Any[]
+    col_durations = Any[]
+    col_preview = Any[]
+    row_styles = Style[]
     display_sel = 0
     item_idx = 0
 
@@ -318,18 +352,20 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
         elapsed = time() - ifc.timestamp
         elapsed_str =
             elapsed < 1.0 ? @sprintf("%.0fms", elapsed * 1000) : @sprintf("%.1fs", elapsed)
-        ts = Dates.format(ifc.timestamp_dt, "HH:MM:SS")
-        sess_name = _session_display_name(ifc.session_key)
-        sess_tag = isempty(filter_key) && !isempty(sess_name) ? " [$sess_name]" : ""
-        eval_tag = if ifc.tool_name == "ex"
-            eid = _extract_eval_id(ifc.progress_lines)
-            isempty(eid) ? "" : " $eid"
-        else
-            ""
-        end
+        push!(col_times, Dates.format(ifc.timestamp_dt, "HH:MM:SS"))
         si = mod1(m.tick ÷ 2, length(SPINNER_BRAILLE))
-        label = "$ts $(SPINNER_BRAILLE[si]) $(ifc.tool_name)$eval_tag$sess_tag ($elapsed_str)"
-        push!(items, ListItem(label, tstyle(:warning)))
+        push!(col_tools, Span("$(SPINNER_BRAILLE[si]) $(ifc.tool_name)", tstyle(:warning)))
+        sess_name = _session_display_name(ifc.session_key)
+        push!(col_sessions, isempty(sess_name) ? Span("開門", tstyle(:accent)) : sess_name)
+        push!(col_durations, Span(elapsed_str, tstyle(:warning)))
+        preview = if ifc.tool_name == "ex"
+            eid = _extract_eval_id(ifc.progress_lines)
+            isempty(eid) ? "running…" : eid
+        else
+            isempty(ifc.last_progress) ? "running…" : _truncate(ifc.last_progress, 40)
+        end
+        push!(col_preview, preview)
+        push!(row_styles, tstyle(:warning))
         if m.selected_inflight == ii
             display_sel = item_idx
         end
@@ -339,22 +375,23 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
     for ri in Iterators.reverse(filtered)
         item_idx += 1
         r = m.tool_results[ri]
-        ts = Dates.format(r.timestamp, "HH:MM:SS")
+        push!(col_times, Dates.format(r.timestamp, "HH:MM:SS"))
         marker = r.success ? "✓" : "✗"
-        style = r.success ? tstyle(:success) : tstyle(:error)
+        tool_style = r.success ? tstyle(:success) : tstyle(:error)
+        push!(col_tools, Span("$marker $(r.tool_name)", tool_style))
         sess_name = _session_display_name(r.session_key)
-        sess_tag = isempty(filter_key) && !isempty(sess_name) ? " [$sess_name]" : ""
-        eval_tag = !isempty(r.eval_id) ? " $(r.eval_id)" : ""
-        label = "$ts $marker $(r.tool_name)$eval_tag$sess_tag ($(r.duration_str))"
-        push!(items, ListItem(label, style))
+        push!(col_sessions, isempty(sess_name) ? Span("開門", tstyle(:accent)) : sess_name)
+        push!(col_durations, r.duration_str)
+        preview = if r.tool_name == "ex"
+            _ex_preview(r)
+        else
+            _tool_preview(r)
+        end
+        push!(col_preview, Span(preview, tstyle(:text_dim)))
+        push!(row_styles, r.success ? tstyle(:success) : tstyle(:error))
         if m.selected_inflight == 0 && ri == m.selected_result
             display_sel = item_idx
         end
-    end
-
-    if isempty(items)
-        msg = isempty(filter_key) ? "No tool calls yet" : "No calls for this session"
-        push!(items, ListItem("  $msg", tstyle(:text_dim)))
     end
 
     # Build title with filter indicator
@@ -370,23 +407,62 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
         isempty(filter_key) ? "Tool Calls ($count_str) [f]ilter $follow_str [d]ata" :
         "Tool Calls ($count_str) [f] $filter_label $follow_str [d]ata"
 
-    list_widget = SelectableList(
-        items;
-        selected = display_sel,
-        offset = m._activity_list_offset,
-        block = Block(
+    n_items = length(col_times)
+    if n_items == 0
+        push!(col_times, "")
+        push!(col_tools, isempty(filter_key) ? "No tool calls yet" : "No calls for this session")
+        push!(col_sessions, "")
+        push!(col_durations, "")
+        push!(col_preview, "")
+        push!(row_styles, tstyle(:text_dim))
+        display_sel = 0
+    end
+
+    # Build or update DataTable — use a hash to detect when rebuild is needed
+    dt_hash = hash((n_items, n_inflight, display_sel, m.tick ÷ 4))
+    old_dt = m.activity_table
+    if old_dt === nothing || old_dt._hash != dt_hash
+        dt = DataTable(
+            [
+                DataColumn("Time", col_times; width=9),
+                DataColumn("Tool", col_tools; width=18),
+                DataColumn("Session", col_sessions; width=12),
+                DataColumn("Duration", col_durations; width=9),
+                DataColumn("Preview", col_preview),
+            ];
+            selected = display_sel,
+            block = Block(
+                title = list_title,
+                border_style = _pane_border(m, 3, 1),
+                title_style = _pane_title(m, 3, 1),
+            ),
+            tick = m.tick,
+            row_styles = row_styles,
+        )
+        dt._hash = dt_hash
+        # Preserve state from old DataTable across rebuilds
+        if old_dt !== nothing
+            dt.last_content_area = old_dt.last_content_area
+            dt.last_col_positions = old_dt.last_col_positions
+            dt.last_widths = old_dt.last_widths
+            dt.offset = old_dt.offset
+            dt.col_widths = old_dt.col_widths
+            dt.col_drag = old_dt.col_drag
+            dt.col_drag_start_x = old_dt.col_drag_start_x
+            dt.col_drag_start_w = old_dt.col_drag_start_w
+        end
+        m.activity_table = dt
+    else
+        dt = old_dt
+        dt.tick = m.tick
+        dt.block = Block(
             title = list_title,
             border_style = _pane_border(m, 3, 1),
             title_style = _pane_title(m, 3, 1),
-        ),
-        highlight_style = tstyle(:accent, bold = true),
-        tick = m.tick,
-    )
-    render(list_widget, panes[1], buf)
+        )
+    end
 
-    # Cache widget for native mouse handling (click + scroll)
-    m._activity_list_widget = list_widget
-    m._activity_list_offset = list_widget.offset
+    render(dt, panes[1], buf)
 
     # ── Bottom pane: detail panel ──
     # Determine what's selected: in-flight or completed

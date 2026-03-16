@@ -68,12 +68,18 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
             end
         end
         3 => begin
-            handle_resize!(m.activity_layout, evt)
-            if m.detail_paragraph !== nothing &&
-               Base.contains(m._activity_detail_area, evt.x, evt.y)
+            _dt_drag3 = m.activity_table !== nothing && m.activity_table.col_drag > 0
+            if !_dt_drag3
+                handle_resize!(m.activity_layout, evt)
+            end
+            _ar = m.activity_layout.rects
+            if m.activity_table !== nothing &&
+               (m.activity_table.col_drag > 0 || (length(_ar) >= 1 && Base.contains(_ar[1], evt.x, evt.y)))
+                _handle_activity_mouse!(m, evt)
+            elseif m.detail_paragraph !== nothing &&
+                   length(_ar) >= 2 && Base.contains(_ar[2], evt.x, evt.y)
                 handle_mouse!(m.detail_paragraph, evt)
             end
-            _handle_activity_mouse!(m, evt)
         end
         4 => begin
             handle_resize!(m.search_layout, evt)
@@ -145,7 +151,7 @@ function Tachikoma.update!(m::KaimonModel, evt::TaskEvent)
         m.search_health_last_check = time()
         # Also refresh collections list if Qdrant is up
         if h.qdrant_up
-            m.search_collections = h.collections
+            m.search_collections = sort(h.collections)
             if m.search_selected_collection > length(m.search_collections)
                 m.search_selected_collection = max(1, length(m.search_collections))
             end
@@ -355,6 +361,12 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
     # When a stress test form field is in edit mode, capture all input
     if m.active_tab == 9 && m.stress_editing
         _handle_stress_field_edit!(m, evt)
+        return
+    end
+
+    # When collection picker popup is open, capture all input
+    if m.active_tab == 4 && m.search_collection_picker_open
+        _handle_collection_picker_key!(m, evt)
         return
     end
 
@@ -681,7 +693,15 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
         (3, _) => begin
             m.activity_mode == :analytics && return
             if fp == 1
-                _handle_activity_scroll!(m, evt)
+                dt = m.activity_table
+                if dt !== nothing
+                    prev = dt.selected
+                    handle_key!(dt, evt)
+                    if dt.selected != prev
+                        m.activity_follow = false
+                        _select_activity_by_display_index!(m, dt.selected)
+                    end
+                end
             elseif fp == 2
                 m.detail_paragraph !== nothing && handle_key!(m.detail_paragraph, evt)
             end
@@ -702,7 +722,12 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
                         min(n, m.search_selected_collection + 1)
                 )
             end
-            :enter => _open_collection_detail!(m)
+            :enter => begin
+                if !isempty(m.search_collections)
+                    m.search_collection_delete_confirm = false
+                    m.search_collection_picker_open = true
+                end
+            end
             _ => nothing
         end
         (4, 2) => @match evt.key begin
@@ -810,94 +835,40 @@ function _reset_test_panes!(m::KaimonModel)
 end
 
 """Navigate the activity tool call list (in-flight + completed, filtered)."""
-function _handle_activity_scroll!(m::KaimonModel, evt::KeyEvent)
-    m.activity_follow = false
-    filter_key = m.activity_filter
-
-    # Build filtered in-flight indices (display order: reversed)
-    fi_indices = Int[]
-    for i = 1:length(m.inflight_calls)
-        if isempty(filter_key) || m.inflight_calls[i].session_key == filter_key
-            push!(fi_indices, i)
-        end
-    end
-    reverse!(fi_indices)
-
-    # Build filtered completed indices (display order: reversed)
-    fc_indices = Int[]
-    for i = 1:length(m.tool_results)
-        if isempty(filter_key) || m.tool_results[i].session_key == filter_key
-            push!(fc_indices, i)
-        end
-    end
-    reverse!(fc_indices)
-
-    total = length(fi_indices) + length(fc_indices)
-    total == 0 && return
-
-    # Find current position in combined list
-    cur = 0
-    if m.selected_inflight > 0
-        pos = findfirst(==(m.selected_inflight), fi_indices)
-        pos !== nothing && (cur = pos)
-    elseif m.selected_result > 0
-        pos = findfirst(==(m.selected_result), fc_indices)
-        pos !== nothing && (cur = length(fi_indices) + pos)
-    end
-
-    # Move selection
-    new_pos = @match evt.key begin
-        :up => max(1, cur - 1)
-        :down => min(total, cur + 1)
-        _ => cur
-    end
-    new_pos == 0 && (new_pos = 1)
-
-    # Map position back to inflight or completed
-    if new_pos <= length(fi_indices)
-        m.selected_inflight = fi_indices[new_pos]
-        m.selected_result = 0
-    else
-        m.selected_inflight = 0
-        m.selected_result = fc_indices[new_pos-length(fi_indices)]
-    end
-    m.result_scroll = 0
-    m._detail_for_result = -1
-end
 
 function _handle_activity_mouse!(m::KaimonModel, evt::MouseEvent)
-    w = m._activity_list_widget
-    w === nothing && return
-    n = length(w.items)
-    n == 0 && return
+    dt = m.activity_table
+    dt === nothing && return
 
-    # Scroll wheel: move selection (like arrow keys) so the detail pane updates
-    is_scroll = evt.button in (mouse_scroll_up, mouse_scroll_down) &&
-                evt.action == mouse_press &&
-                Base.contains(w.last_area, evt.x, evt.y)
+    # Scroll wheel: move selection (not viewport) so detail pane updates
+    is_scroll = evt.button in (mouse_scroll_up, mouse_scroll_down) && evt.action == mouse_press
     if is_scroll
+        n = sum(length(c.values) for c in dt.columns; init=0) ÷ max(1, length(dt.columns))
+        n == 0 && return
         m.activity_follow = false
         step = evt.button == mouse_scroll_up ? -3 : 3
-        new_sel = clamp(w.selected + step, 1, n)
-        if new_sel != w.selected
-            w.selected = new_sel
-            m._activity_list_offset = w.offset
+        new_sel = clamp(dt.selected + step, 1, n)
+        if new_sel != dt.selected
+            dt.selected = new_sel
+            # Keep selection visible
+            vis_h = max(1, dt.last_content_area.height - 1)
+            if dt.selected < dt.offset + 1
+                dt.offset = max(0, dt.selected - 1)
+            elseif dt.selected > dt.offset + vis_h
+                dt.offset = dt.selected - vis_h
+            end
             _select_activity_by_display_index!(m, new_sel)
             m.focused_pane[3] = 1
         end
         return
     end
 
-    # Click: delegate to widget
-    prev_sel = w.selected
-    handled = handle_mouse!(w, evt)
-    handled || return
-
-    m._activity_list_offset = w.offset
-
-    if w.selected != prev_sel
+    # Click/drag: delegate to DataTable (handles col resize + row selection)
+    prev_sel = dt.selected
+    handle_mouse!(dt, evt)
+    if dt.selected != prev_sel
         m.activity_follow = false
-        _select_activity_by_display_index!(m, w.selected)
+        _select_activity_by_display_index!(m, dt.selected)
         m.focused_pane[3] = 1
     end
 end

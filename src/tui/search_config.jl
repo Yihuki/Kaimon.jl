@@ -20,6 +20,12 @@ function _handle_search_key!(m::KaimonModel, evt::KeyEvent)
             end
         end
         'p' => _pull_embedding_model_async!(m)
+        'c' => begin
+            if !isempty(m.search_collections)
+                m.search_collection_delete_confirm = false
+                m.search_collection_picker_open = true
+            end
+        end
         'o' => _open_search_config!(m)
         'm' => _open_search_manage!(m)
         _ => nothing

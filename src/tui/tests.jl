@@ -523,7 +523,7 @@ function _view_test_session_picker(m::KaimonModel, area::Rect, buf::Buffer)
 
     for row = inner.y:bottom(inner)
         for col = inner.x:right(inner)
-            set_char!(buf, col, row, ' ', Style())
+            set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
         end
     end
 

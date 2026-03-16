@@ -37,7 +37,7 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
         if inner.width >= 4
             for row = inner.y:bottom(inner)
                 for col = inner.x:right(inner)
-                    set_char!(buf, col, row, ' ', Style())
+                    set_char!(buf, col, row, ' ', Style(bg=Tachikoma.theme().bg))
                 end
             end
             si = mod1(m.tick ÷ 2, length(SPINNER_BRAILLE))
