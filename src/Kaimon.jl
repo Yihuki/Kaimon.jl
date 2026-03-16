@@ -1241,6 +1241,21 @@ function _resolve_gate_conn(session::String)
 end
 
 """
+    connect_tcp_to_active_manager(host, port; name="remote") -> REPLConnection
+
+Connect to a TCP gate at `host:port` using the active ConnectionManager.
+Used by the REST API endpoint to allow browser-driven gate connections.
+Throws if no ConnectionManager is available or connection fails.
+"""
+function connect_tcp_to_active_manager(host::String, port::Int; name::String = "remote")
+    mgr = GATE_CONN_MGR[]
+    if mgr === nothing
+        error("No ConnectionManager available — gate services not running")
+    end
+    return connect_tcp!(mgr, host, port; name = name)
+end
+
+"""
     _prepare_gate_code(code, quiet) -> (cleaned_code, show_return_value, was_stripped)
 
 Apply println stripping and quiet-mode semicolons to code before sending to gate.
