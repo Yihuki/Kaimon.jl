@@ -110,7 +110,7 @@ end
     sessions_left_layout::ResizableLayout = ResizableLayout(Vertical, [Fill(), Percent(40)])
 
     # Server tab layout (resizable)
-    server_layout::ResizableLayout = ResizableLayout(Vertical, [Fixed(9), Fill()])
+    server_layout::ResizableLayout = ResizableLayout(Vertical, [Fixed(4), Fill()])
 
     # Config tab layouts (resizable)
     config_layout::ResizableLayout = ResizableLayout(Horizontal, [Percent(50), Fill()])
