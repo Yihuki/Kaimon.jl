@@ -465,7 +465,8 @@ function discover_sessions(mgr::ConnectionManager)
         # Skip duplicate sessions from the same process (same name + PID).
         # This happens when a gate restarts within the same process, leaving
         # a stale socket file alongside the new one.
-        if (name, pid) in known_name_pids
+        # TCP sessions are exempt — a process can legitimately host both IPC and TCP gates.
+        if session_mode != :tcp && (name, pid) in known_name_pids
             # Clean up the stale duplicate
             _remove_session_files(mgr.sock_dir, session_id)
             continue
