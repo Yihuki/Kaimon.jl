@@ -1533,6 +1533,7 @@ function collect_tools()::Vector{MCPTool}
         tool_help_tool,
         repl_tool,
         manage_repl_tool,
+        connect_tcp_tool,
         start_session_tool,
         set_tty_tool,
         vscode_command_tool,

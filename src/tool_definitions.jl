@@ -559,6 +559,53 @@ Commands:
     end
 )
 
+connect_tcp_tool = @mcp_tool(
+    :connect_tcp,
+    """Connect to a remote Julia gate session over TCP.
+
+Use this to connect to a gate started with `Gate.serve(mode=:tcp, port=9876)` on
+a remote (or local) machine. The PUB stream socket is assumed to be on port + 1.""",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "host" => Dict(
+                "type" => "string",
+                "description" => "Hostname or IP address of the remote gate",
+            ),
+            "port" => Dict(
+                "type" => "integer",
+                "description" => "Port number (default 9876)",
+                "default" => 9876,
+            ),
+            "name" => Dict(
+                "type" => "string",
+                "description" => "Optional display name for the session",
+            ),
+        ),
+        "required" => ["host"],
+    ),
+    (args) -> begin
+        host = get(args, "host", "")
+        isempty(host) && return "Error: host is required"
+        port = get(args, "port", 9876)
+        port = port isa Number ? Int(port) : tryparse(Int, string(port))
+        port === nothing && return "Error: invalid port"
+        name = get(args, "name", "")
+
+        mgr = GATE_CONN_MGR[]
+        mgr === nothing && return "Error: No ConnectionManager available"
+
+        conn = try
+            connect_tcp!(mgr, host, port; name)
+        catch e
+            return "Error: $(sprint(showerror, e))"
+        end
+
+        key = short_key(conn)
+        "Connected to TCP gate at $host:$port (session key: $key)"
+    end
+)
+
 start_session_tool = @mcp_tool(
     :start_session,
     """Spawn a new Julia session for a project.

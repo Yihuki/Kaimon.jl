@@ -516,6 +516,54 @@ function discover_sessions(mgr::ConnectionManager)
     return new_connections
 end
 
+"""
+    connect_tcp!(mgr::ConnectionManager, host::String, port::Int; name="") -> REPLConnection
+
+Manually connect to a TCP gate at `host:port`. The PUB stream socket is assumed
+to be on `port + 1` (matching `Gate.serve(mode=:tcp)` convention).
+
+Returns the connected `REPLConnection`, or throws on failure.
+"""
+function connect_tcp!(mgr::ConnectionManager, host::String, port::Int; name::String = "")
+    endpoint = "tcp://$(host):$(port)"
+    stream_endpoint = "tcp://$(host):$(port + 1)"
+    sid = "tcp-$(host)-$(port)"
+
+    # Check for existing connection to this endpoint
+    existing = lock(mgr.lock) do
+        findfirst(c -> c.session_id == sid, mgr.connections)
+    end
+    existing !== nothing && error("Already connected to $endpoint")
+
+    display_name = isempty(name) ? "$(host):$(port)" : name
+    conn = REPLConnection(
+        session_id = sid,
+        name = isempty(name) ? "tcp" : name,
+        display_name = display_name,
+        socket_path = "",  # empty = TCP session
+        endpoint = endpoint,
+        stream_endpoint = stream_endpoint,
+        project_path = "",
+        julia_version = "",
+        pid = 0,
+        spawned_by = "user",
+    )
+
+    if !connect!(mgr, conn)
+        error("Failed to connect to TCP gate at $endpoint")
+    end
+
+    lock(mgr.lock) do
+        push!(mgr.connections, conn)
+    end
+    _fire_sessions_changed(mgr)
+
+    # Write a local metadata file so reconnect works after TUI restart
+    Gate.write_metadata(sid, conn.name, endpoint, stream_endpoint; spawned_by = "user", mode = :tcp)
+
+    return conn
+end
+
 function connect!(mgr::ConnectionManager, conn::REPLConnection)
     conn.status = :connecting
     try
