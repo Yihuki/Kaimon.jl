@@ -1344,6 +1344,13 @@ function _base_julia_args()::Vector{String}
     orig = _ORIGINAL_ARGV[]
     isempty(orig) && return Base.julia_cmd().exec
 
+    # Flags that take a separate value and should be combined into one token
+    # (e.g. `-t 4,2` → `-t4,2`) to avoid the value being misinterpreted as a
+    # positional script argument on restart.
+    const _VALUE_FLAGS = Set(["-t", "--threads", "-C", "--cpu-target",
+                              "-J", "--sysimage", "-O", "--optimize",
+                              "--gcthreads", "--heap-size-hint"])
+
     result = [orig[1]]   # preserve exact Julia binary path
     i = 2
     while i <= length(orig)
@@ -1360,6 +1367,17 @@ function _base_julia_args()::Vector{String}
         # Strip bare -i (we add our own); leave e.g. --inline alone
         if arg == "-i"
             i += 1
+            continue
+        end
+        # Combine short flags with their separate value into one token
+        # so the value isn't mistaken for a positional arg on restart
+        if arg in _VALUE_FLAGS && i < length(orig) && !startswith(orig[i+1], "-")
+            if startswith(arg, "--")
+                push!(result, "$(arg)=$(orig[i+1])")
+            else
+                push!(result, "$(arg)$(orig[i+1])")
+            end
+            i += 2
             continue
         end
         push!(result, arg)
