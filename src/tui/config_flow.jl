@@ -84,7 +84,7 @@ end
 function _remove_tcp_gate!(m::KaimonModel)
     isempty(m.tcp_gate_entries) && return
     idx = m.selected_tcp_gate
-    idx < 1 || idx > length(m.tcp_gate_entries) && return
+    (idx < 1 || idx > length(m.tcp_gate_entries)) && return
     entry = m.tcp_gate_entries[idx]
 
     # Disconnect if connected
