@@ -41,6 +41,69 @@ function begin_project_edit_launch!(m::KaimonModel)
     m.config_flow = FLOW_PROJECT_EDIT_LAUNCH
 end
 
+function begin_tcp_gate_add!(m::KaimonModel)
+    m.tcp_gate_input = TextInput(text = "127.0.0.1:9876", label = "Host:Port: ", tick = m.tick)
+    m.tcp_gate_name_input = TextInput(text = "", label = "Name: ", tick = m.tick)
+    m._tcp_gate_field = 1
+    m.config_flow = FLOW_TCP_GATE_ADD
+end
+
+function _execute_tcp_gate_add!(m::KaimonModel)
+    addr = strip(Tachikoma.text(m.tcp_gate_input))
+    name = strip(Tachikoma.text(m.tcp_gate_name_input))
+
+    # Parse host:port
+    parts = split(addr, ':')
+    host = length(parts) >= 1 ? String(strip(parts[1])) : ""
+    port = length(parts) >= 2 ? tryparse(Int, strip(parts[2])) : 9876
+    if isempty(host) || port === nothing
+        m.flow_message = "Invalid address: $addr"
+        m.flow_success = false
+        m.config_flow = FLOW_TCP_GATE_ADD_RESULT
+        return
+    end
+
+    # Check for duplicates
+    for e in m.tcp_gate_entries
+        if e.host == host && e.port == port
+            m.flow_message = "Already registered: $host:$port"
+            m.flow_success = false
+            m.config_flow = FLOW_TCP_GATE_ADD_RESULT
+            return
+        end
+    end
+
+    entry = TCPGateEntry(host, port, isempty(name) ? "$host:$port" : name, true)
+    push!(m.tcp_gate_entries, entry)
+    save_tcp_gates_config(m.tcp_gate_entries)
+    m.flow_message = "Added TCP gate: $(entry.name) ($host:$port)"
+    m.flow_success = true
+    m.config_flow = FLOW_TCP_GATE_ADD_RESULT
+end
+
+function _remove_tcp_gate!(m::KaimonModel)
+    isempty(m.tcp_gate_entries) && return
+    idx = m.selected_tcp_gate
+    idx < 1 || idx > length(m.tcp_gate_entries) && return
+    entry = m.tcp_gate_entries[idx]
+
+    # Disconnect if connected
+    if m.conn_mgr !== nothing
+        sid = "tcp-$(entry.host)-$(entry.port)"
+        lock(m.conn_mgr.lock) do
+            ci = findfirst(c -> c.session_id == sid, m.conn_mgr.connections)
+            if ci !== nothing
+                disconnect!(m.conn_mgr.connections[ci])
+                deleteat!(m.conn_mgr.connections, ci)
+            end
+        end
+    end
+
+    deleteat!(m.tcp_gate_entries, idx)
+    save_tcp_gates_config(m.tcp_gate_entries)
+    m.selected_tcp_gate = clamp(m.selected_tcp_gate, 1, max(1, length(m.tcp_gate_entries)))
+end
+
 # ── Config Flow: Input Handler ───────────────────────────────────────────────
 
 const CLIENT_OPTIONS = [:claude, :gemini, :codex, :copilot, :vscode, :kilo, :cursor, :opencode]
@@ -133,6 +196,23 @@ function handle_flow_input!(m::KaimonModel, evt::KeyEvent)
             _ => nothing
         end
     elseif flow == FLOW_PROJECT_REMOVE_RESULT
+        m.config_flow = FLOW_IDLE
+
+    elseif flow == FLOW_TCP_GATE_ADD
+        # Two fields: host:port (tab to switch to name), name
+        if m._tcp_gate_field == 1
+            @match evt.key begin
+                :enter || :tab => (m._tcp_gate_field = 2)
+                _ => handle_key!(m.tcp_gate_input, evt)
+            end
+        else
+            @match evt.key begin
+                :enter => _execute_tcp_gate_add!(m)
+                :backtab => (m._tcp_gate_field = 1)
+                _ => handle_key!(m.tcp_gate_name_input, evt)
+            end
+        end
+    elseif flow == FLOW_TCP_GATE_ADD_RESULT
         m.config_flow = FLOW_IDLE
 
     elseif flow == FLOW_PROJECT_EDIT_LAUNCH

@@ -75,6 +75,9 @@ end
     FLOW_PROJECT_REMOVE_RESULT  # Success/failure feedback
     # Launch config editing
     FLOW_PROJECT_EDIT_LAUNCH    # Edit launch config for selected project
+
+    FLOW_TCP_GATE_ADD           # TextInput for host:port
+    FLOW_TCP_GATE_ADD_RESULT    # Success/failure feedback
 end
 
 # Stress test state machine
@@ -127,7 +130,7 @@ end
     # Config tab layouts (resizable)
     config_layout::ResizableLayout = ResizableLayout(Horizontal, [Percent(50), Fill()])
     config_left_layout::ResizableLayout = ResizableLayout(Vertical, [Fixed(7), Fill()])
-    config_right_layout::ResizableLayout = ResizableLayout(Vertical, [Percent(55), Fill()])
+    config_right_layout::ResizableLayout = ResizableLayout(Vertical, [Percent(45), Fill()])
 
     # Activity feed — unified timeline of tool calls + streaming output
     activity_feed::Vector{ActivityEvent} = ActivityEvent[]
@@ -398,6 +401,13 @@ end
     launch_config_inputs::Dict{Symbol,Any} = Dict{Symbol,Any}()  # TextInput widgets for threads/gc/heap/extra
     launch_config_selected::Int = 1  # which field is focused (1-4)
 
+    # ── TCP Gates (Config tab) ──
+    tcp_gate_entries::Vector{TCPGateEntry} = TCPGateEntry[]
+    selected_tcp_gate::Int = 1
+    tcp_gate_input::Any = nothing       # TextInput for host:port
+    tcp_gate_name_input::Any = nothing  # TextInput for display name
+    _tcp_gate_field::Int = 1            # 1=host:port, 2=name
+
     # ── Extensions tab (tab 8) ──
     ext_selected::Int = 1                 # selected extension in list
     ext_detail_scroll::Int = 0            # scroll offset in detail pane
@@ -425,7 +435,7 @@ end
 
 # Number of focusable panes per tab
 # Tab order: 1=Server 2=Sessions 3=Activity 4=Search 5=Tests 6=Config 7=Debug 8=Extensions 9=Advanced
-const _PANE_COUNTS = Dict(1 => 2, 2 => 3, 3 => 2, 4 => 3, 5 => 2, 6 => 4, 7 => 2, 8 => 2, 9 => 3)
+const _PANE_COUNTS = Dict(1 => 2, 2 => 3, 3 => 2, 4 => 3, 5 => 2, 6 => 5, 7 => 2, 8 => 2, 9 => 3)
 
 """Return the border style for a pane — highlighted if focused."""
 function _pane_border(m::KaimonModel, tab::Int, pane::Int)

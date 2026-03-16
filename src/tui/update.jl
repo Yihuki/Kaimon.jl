@@ -674,6 +674,8 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
             'D' => begin_project_remove!(m)
             'e' => begin_project_edit_launch!(m)
             'E' => cycle_editor!(m)
+            'T' => begin_tcp_gate_add!(m)
+            'X' => _remove_tcp_gate!(m)
             _ => nothing
         end
 
@@ -846,6 +848,15 @@ function _handle_nav!(m::KaimonModel, evt::KeyEvent)
             :down => begin
                 n = length(m.project_entries)
                 n > 0 && (m.selected_project = min(n, m.selected_project + 1))
+            end
+            _ => nothing
+        end
+
+        (6, 5) => @match evt.key begin
+            :up => (m.selected_tcp_gate = max(1, m.selected_tcp_gate - 1))
+            :down => begin
+                n = length(m.tcp_gate_entries)
+                n > 0 && (m.selected_tcp_gate = min(n, m.selected_tcp_gate + 1))
             end
             _ => nothing
         end

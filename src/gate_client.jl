@@ -565,6 +565,33 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int; name::Str
     return conn
 end
 
+"""Poll registered TCP gate endpoints and connect any that are reachable but not yet connected."""
+function _poll_tcp_gates!(mgr::ConnectionManager)
+    entries = load_tcp_gates_config()
+    isempty(entries) && return
+
+    for entry in entries
+        entry.enabled || continue
+        isempty(entry.host) && continue
+
+        sid = "tcp-$(entry.host)-$(entry.port)"
+
+        # Already connected?
+        already = lock(mgr.lock) do
+            any(c -> c.session_id == sid && c.status in (:connected, :evaluating, :stalled, :connecting), mgr.connections)
+        end
+        already && continue
+
+        # Try to connect (non-blocking attempt with short timeout)
+        try
+            connect_tcp!(mgr, entry.host, entry.port; name = entry.name)
+            @debug "TCP gate connected" host = entry.host port = entry.port
+        catch
+            # Gate not reachable — will retry next poll
+        end
+    end
+end
+
 function connect!(mgr::ConnectionManager, conn::REPLConnection)
     conn.status = :connecting
     try
@@ -1226,6 +1253,14 @@ function start!(mgr::ConnectionManager)
             catch e
                 @debug "Watcher error" exception = e
             end
+
+            # Poll registered TCP gates
+            try
+                _poll_tcp_gates!(mgr)
+            catch e
+                @debug "TCP gate poll error" exception = e
+            end
+
             sleep(2)  # Poll every 2 seconds
         end
     end

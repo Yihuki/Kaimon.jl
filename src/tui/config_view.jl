@@ -99,10 +99,12 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
         set_string!(buf, x + 4, y, "current: $(m.editor)", tstyle(:success))
     end
 
-    # ── Right column: MCP Clients (top) + Allowed Projects (bottom) ──
+    # ── Right column: MCP Clients (top) + Projects & TCP Gates side-by-side (bottom) ──
     right_rows = split_layout(m.config_right_layout, cols[2])
     length(right_rows) < 2 && return
     render_resize_handles!(buf, m.config_right_layout)
+    # Split bottom row into two columns for Projects and TCP Gates
+    bottom_cols = tsplit(Layout(Horizontal, [Percent(55), Fill()]), right_rows[2])
 
     # ── MCP Client Status ──
     client_block = Block(
@@ -146,7 +148,7 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
         border_style = _pane_border(m, 6, 4),
         title_style = _pane_title(m, 6, 4),
     )
-    proj_inner = render(proj_block, right_rows[2], buf)
+    proj_inner = render(proj_block, bottom_cols[1], buf)
     if proj_inner.width >= 4
         y = proj_inner.y
         x = proj_inner.x + 1
@@ -195,6 +197,64 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
         y = bottom(proj_inner)
         if y >= proj_inner.y + 1
             set_string!(buf, x, y, "[p] Add  [D] Remove  [e] Launch Config", tstyle(:text_dim))
+        end
+    end
+
+    # ── TCP Gates ──
+    n_tcp = length(m.tcp_gate_entries)
+    tcp_block = Block(
+        title = "TCP Gates ($n_tcp)",
+        border_style = _pane_border(m, 6, 5),
+        title_style = _pane_title(m, 6, 5),
+    )
+    tcp_inner = render(tcp_block, bottom_cols[2], buf)
+    if tcp_inner.width >= 4
+        y = tcp_inner.y
+        x = tcp_inner.x + 1
+
+        if isempty(m.tcp_gate_entries)
+            set_string!(buf, x, y, "No TCP gates registered", tstyle(:text_dim))
+            y += 1
+            set_string!(buf, x, y, "Press [T] to add one", tstyle(:text_dim))
+        else
+            for (i, entry) in enumerate(m.tcp_gate_entries)
+                y > bottom(tcp_inner) - 2 && break
+                # Check if connected
+                sid = "tcp-$(entry.host)-$(entry.port)"
+                connected = m.conn_mgr !== nothing && any(
+                    c -> c.session_id == sid && c.status in (:connected, :evaluating),
+                    connected_sessions(m.conn_mgr),
+                )
+                marker = i == m.selected_tcp_gate ? "▸ " : "  "
+                icon = entry.enabled ? (connected ? "⬤" : "○") : "○"
+                icon_style = connected ? tstyle(:success) : entry.enabled ? tstyle(:warning) : tstyle(:text_dim)
+                name_style = i == m.selected_tcp_gate ? tstyle(:accent, bold = true) : tstyle(:text)
+
+                label = isempty(entry.name) ? "$(entry.host):$(entry.port)" : entry.name
+                status_text = connected ? "connected" : entry.enabled ? "waiting" : "disabled"
+
+                set_string!(buf, x, y, marker, name_style)
+                set_string!(buf, x + 2, y, "$icon ", icon_style)
+                set_string!(buf, x + 4, y, label, name_style)
+                # Host:port after name if name is set
+                if !isempty(entry.name)
+                    addr = "$(entry.host):$(entry.port)"
+                    addr_x = x + 4 + length(label) + 1
+                    if addr_x + length(addr) < right(tcp_inner) - length(status_text) - 2
+                        set_string!(buf, addr_x, y, addr, tstyle(:text_dim))
+                    end
+                end
+                status_x = right(tcp_inner) - length(status_text)
+                if status_x > x + 20
+                    set_string!(buf, status_x, y, status_text, icon_style)
+                end
+                y += 1
+            end
+        end
+
+        y = bottom(tcp_inner)
+        if y >= tcp_inner.y + 1
+            set_string!(buf, x, y, "[T] Add  [X] Remove", tstyle(:text_dim))
         end
     end
 end
@@ -341,6 +401,12 @@ function view_config_flow(m::KaimonModel, area::Rect, buf::Buffer)
 
     elseif flow == FLOW_PROJECT_EDIT_LAUNCH
         _render_launch_config_modal(m, buf, area)
+
+    elseif flow == FLOW_TCP_GATE_ADD
+        _render_tcp_gate_add_modal(m, buf, area)
+
+    elseif flow == FLOW_TCP_GATE_ADD_RESULT
+        _render_result_modal(buf, area, m.flow_success, m.flow_message; tick = m.tick)
     end
 end
 
@@ -585,5 +651,61 @@ function _render_result_modal(
     y += 1
     if y <= bottom(inner)
         set_string!(buf, x, y, "Press any key to close", tstyle(:text_dim))
+    end
+end
+
+function _render_tcp_gate_add_modal(m::KaimonModel, buf::Buffer, area::Rect)
+    w = min(46, area.width - 4)
+    h = 8
+    rect = center(area, w, h)
+
+    border_s = tstyle(:accent, bold = true)
+    title = "Add TCP Gate"
+    inner = render(
+        Block(title = title, border_style = border_s, title_style = border_s, box = BOX_HEAVY),
+        rect, buf,
+    )
+    inner.width < 4 && return
+
+    for row = inner.y:bottom(inner)
+        for col = inner.x:right(inner)
+            set_char!(buf, col, row, ' ', Style(bg = Tachikoma.theme().bg))
+        end
+    end
+
+    y = inner.y
+    x = inner.x + 1
+    label_w = 12
+
+    # Field 1: Host:Port
+    f1_active = m._tcp_gate_field == 1
+    set_string!(buf, x, y, rpad("Host:Port", label_w), f1_active ? tstyle(:accent) : tstyle(:text_dim))
+    if m.tcp_gate_input !== nothing
+        m.tcp_gate_input.tick = m.tick
+        input_area = Rect(x + label_w, y, inner.width - label_w - 2, 1)
+        if f1_active
+            render(m.tcp_gate_input, input_area, buf)
+        else
+            set_string!(buf, x + label_w, y, Tachikoma.text(m.tcp_gate_input), tstyle(:text))
+        end
+    end
+    y += 1
+
+    # Field 2: Name
+    f2_active = m._tcp_gate_field == 2
+    set_string!(buf, x, y, rpad("Name", label_w), f2_active ? tstyle(:accent) : tstyle(:text_dim))
+    if m.tcp_gate_name_input !== nothing
+        m.tcp_gate_name_input.tick = m.tick
+        input_area = Rect(x + label_w, y, inner.width - label_w - 2, 1)
+        if f2_active
+            render(m.tcp_gate_name_input, input_area, buf)
+        else
+            set_string!(buf, x + label_w, y, Tachikoma.text(m.tcp_gate_name_input), tstyle(:text))
+        end
+    end
+    y += 2
+
+    if y <= bottom(inner)
+        set_string!(buf, x, y, "[Tab] switch field  [Enter] add  [Esc] cancel", tstyle(:text_dim))
     end
 end

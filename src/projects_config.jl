@@ -271,3 +271,56 @@ function is_project_allowed(path::String)
     end
     return false
 end
+
+# ── TCP Gates Registry ───────────────────────────────────────────────────────
+# Persistent list of TCP gate endpoints that Kaimon polls for connections.
+
+struct TCPGateEntry
+    host::String
+    port::Int
+    name::String      # display name
+    enabled::Bool
+end
+
+function get_tcp_gates_config_path()
+    joinpath(kaimon_config_dir(), "tcp_gates.json")
+end
+
+function load_tcp_gates_config()::Vector{TCPGateEntry}
+    path = get_tcp_gates_config_path()
+    isfile(path) || return TCPGateEntry[]
+    try
+        data = JSON.parsefile(path)
+        gates = get(data, "tcp_gates", [])
+        return [
+            TCPGateEntry(
+                String(get(g, "host", "")),
+                Int(get(g, "port", 9876)),
+                String(get(g, "name", "")),
+                Bool(get(g, "enabled", true)),
+            ) for g in gates
+        ]
+    catch e
+        @warn "Failed to load TCP gates config" exception = e
+        return TCPGateEntry[]
+    end
+end
+
+function save_tcp_gates_config(entries::Vector{TCPGateEntry})
+    path = get_tcp_gates_config_path()
+    mkpath(dirname(path))
+    data = Dict{String,Any}(
+        "tcp_gates" => [
+            Dict{String,Any}(
+                "host" => e.host,
+                "port" => e.port,
+                "name" => e.name,
+                "enabled" => e.enabled,
+            ) for e in entries
+        ],
+    )
+    open(path, "w") do io
+        JSON.print(io, data, 2)
+        println(io)
+    end
+end
