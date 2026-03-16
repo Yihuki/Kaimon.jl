@@ -402,7 +402,7 @@ end
 """Handle Enter on the Advanced tab — open field for editing or run."""
 function _handle_stress_enter!(m::KaimonModel)
     m.stress_state == STRESS_RUNNING && return
-    get(m.focused_pane, 8, 1) == 1 || return
+    get(m.focused_pane, 9, 1) == 1 || return
 
     @match m.stress_field_idx begin
         1 => begin
@@ -514,7 +514,7 @@ end
 """Render the stress test configuration form."""
 function _view_stress_form(m::KaimonModel, area::Rect, buf::Buffer)
     is_running = m.stress_state == STRESS_RUNNING
-    fp = get(m.focused_pane, 5, 1)
+    fp = get(m.focused_pane, 9, 1)
     form_focused = fp == 1
 
     # If code editor is open, render it as an overlay instead of the form

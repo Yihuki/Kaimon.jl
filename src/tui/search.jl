@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Search tab (tab 7)
+# Search tab (tab 4)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 """Render the Search tab: status + query + results panes."""
@@ -39,8 +39,8 @@ end
 function _view_search_status(m::KaimonModel, area::Rect, buf::Buffer)
     blk = Block(
         title = "Semantic Search",
-        border_style = _pane_border(m, 7, 1),
-        title_style = _pane_title(m, 7, 1),
+        border_style = _pane_border(m, 4, 1),
+        title_style = _pane_title(m, 4, 1),
     )
     inner = render(blk, area, buf)
     inner.height < 1 && return
@@ -161,8 +161,8 @@ _search_filter_label(m) = m.search_chunk_type == "all" ? "all" :
 function _view_search_query(m::KaimonModel, area::Rect, buf::Buffer)
     blk = Block(
         title = "Query",
-        border_style = _pane_border(m, 7, 2),
-        title_style = _pane_title(m, 7, 2),
+        border_style = _pane_border(m, 4, 2),
+        title_style = _pane_title(m, 4, 2),
     )
     inner = render(blk, area, buf)
     inner.height < 1 && return
@@ -211,8 +211,8 @@ function _view_search_results(m::KaimonModel, area::Rect, buf::Buffer)
     pane = m.search_results_pane::ScrollPane
     pane.block = Block(
         title = "Results ($(n_results))",
-        border_style = _pane_border(m, 7, 3),
-        title_style = _pane_title(m, 7, 3),
+        border_style = _pane_border(m, 4, 3),
+        title_style = _pane_title(m, 4, 3),
     )
     render(pane, area, buf)
 end

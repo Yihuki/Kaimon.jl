@@ -38,8 +38,8 @@ function _view_extensions_list(m::KaimonModel, area::Rect, buf::Buffer)
 
     block = Block(
         title = "Extensions ($(length(extensions)))",
-        border_style = _pane_border(m, 9, 1),
-        title_style = _pane_title(m, 9, 1),
+        border_style = _pane_border(m, 8, 1),
+        title_style = _pane_title(m, 8, 1),
     )
     inner = render(block, area, buf)
     inner.width < 4 && return
@@ -123,8 +123,8 @@ function _view_extensions_detail(m::KaimonModel, area::Rect, buf::Buffer)
 
     block = Block(
         title = "Detail",
-        border_style = _pane_border(m, 9, 2),
-        title_style = _pane_title(m, 9, 2),
+        border_style = _pane_border(m, 8, 2),
+        title_style = _pane_title(m, 8, 2),
     )
     inner = render(block, area, buf)
     inner.width < 4 && return

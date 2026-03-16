@@ -287,7 +287,7 @@ end
 
 """Render the stress test output pane with live agent visualization."""
 function _view_stress_output(m::KaimonModel, area::Rect, buf::Buffer)
-    fp = get(m.focused_pane, 8, 1)
+    fp = get(m.focused_pane, 9, 1)
     horde_focused = fp == 2
     log_focused = fp == 3
 
