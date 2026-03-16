@@ -384,6 +384,12 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
         return
     end
 
+    # When activity filter popup is open, capture all input
+    if m.active_tab == 3 && m.activity_filter_open
+        _handle_activity_filter_key!(m, evt)
+        return
+    end
+
     # When collection picker popup is open, capture all input
     if m.active_tab == 4 && m.search_collection_picker_open
         _handle_collection_picker_key!(m, evt)
@@ -620,7 +626,7 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
         end
 
         3 => @match evt.char begin
-            'f' => (m.activity_mode == :live && _cycle_activity_filter!(m))
+            'f' => (m.activity_mode == :live && _open_activity_filter!(m))
             'F' =>
                 (m.activity_mode == :live && (m.activity_follow = !m.activity_follow))
             'w' => begin

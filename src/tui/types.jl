@@ -140,6 +140,8 @@ end
     result_scroll::Int = 0         # vertical scroll in detail panel
     activity_layout::ResizableLayout = ResizableLayout(Vertical, [Percent(35), Fill()])
     activity_filter::String = ""   # "" = all, or session_key to filter by
+    activity_filter_open::Bool = false
+    activity_filter_selected::Int = 0  # 0 = "All", 1+ = index into session list
     result_word_wrap::Bool = true   # word wrap in detail panel
     detail_paragraph::Union{Paragraph,Nothing} = nothing  # cached for scroll state
     _detail_for_result::Int = -1   # which selected_result the paragraph was built for

@@ -359,7 +359,10 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
     @match m.active_tab begin
         1 => view_server(m, content_area, f)
         2 => view_sessions(m, content_area, buf)
-        3 => view_activity(m, content_area, buf)
+        3 => begin
+            view_activity(m, content_area, buf)
+            m.activity_filter_open && _view_activity_filter(m, content_area, buf)
+        end
         4 => view_search(m, content_area, buf)
         5 => begin
             # Follow mode: always snap to newest run
@@ -492,7 +495,7 @@ function view_server(m::KaimonModel, area::Rect, f::Frame)
         status_icon = m.server_running ? "●" : m.server_started ? "○" : "◌"
         status_text = m.server_running ? "running" : m.server_started ? "stopped" : "starting…"
         status_style = m.server_running ? tstyle(:success) : tstyle(:error)
-        n_conns = m.conn_mgr !== nothing ? length(connected_sessions(m.conn_mgr)) : 0
+        n_conns = m.conn_mgr !== nothing ? count(c -> c.spawned_by != "extension", connected_sessions(m.conn_mgr)) : 0
 
         # Row 1: status + port + uptime
         _write_spans!(buf, x, y, [
