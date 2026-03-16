@@ -102,6 +102,8 @@ const _DEBUG_PAUSED = Ref{Any}(nothing)        # NamedTuple with pause info, or 
 const _DEBUG_RESUME_CH = Ref{Any}(nothing)      # Channel{Symbol} — :continue
 const _DEBUG_EVAL_CH = Ref{Any}(nothing)        # Channel{Pair{String, Channel{Any}}}
 const _INFILTRATOR_HOOKED = Ref(false)          # true once _install_infiltrator_hook! succeeds
+const _INFILTRATOR_DISABLED = Ref(false)        # true after explicit uninstall — suppresses callback
+const _INFILTRATOR_ORIG_PROMPT = Ref{Any}(nothing)  # original start_prompt method for restore
 
 """
     _breakpoint_hook(locals::Dict{Symbol,Any}; file="unknown", line=0)
@@ -195,6 +197,10 @@ function _install_infiltrator_hook!()
     if isdefined(Infiltrator, :clear_disabled!)
         Infiltrator.clear_disabled!()
     end
+    # Save original start_prompt before overriding (for uninstall)
+    if _INFILTRATOR_ORIG_PROMPT[] === nothing
+        _INFILTRATOR_ORIG_PROMPT[] = Infiltrator.start_prompt
+    end
     # Override start_prompt to route through our breakpoint system
     @eval function ($Infiltrator).start_prompt(
         mod, locals::Dict{Symbol,Any}, file, fileline, ex = nothing, bt = nothing;
@@ -204,6 +210,31 @@ function _install_infiltrator_hook!()
     end
     _INFILTRATOR_HOOKED[] = true
     @info "Infiltrator.jl integration active — @infiltrate routes through gate debug protocol"
+end
+
+"""
+    uninstall_infiltrator_hook!()
+
+Restore Infiltrator's original `start_prompt` so `@infiltrate` opens the normal
+interactive REPL prompt instead of routing through the gate debug protocol.
+"""
+function uninstall_infiltrator_hook!()
+    _INFILTRATOR_DISABLED[] = true
+    _INFILTRATOR_HOOKED[] || return
+    Infiltrator = _find_infiltrator()
+    Infiltrator === nothing && return
+    orig = _INFILTRATOR_ORIG_PROMPT[]
+    if orig !== nothing
+        @eval function ($Infiltrator).start_prompt(
+            mod, locals::Dict{Symbol,Any}, file, fileline, ex = nothing, bt = nothing;
+            terminal = nothing, repl = nothing, nostack = false,
+        )
+            ($orig)(mod, locals, file, fileline, ex, bt;
+                    terminal = terminal, repl = repl, nostack = nostack)
+        end
+    end
+    _INFILTRATOR_HOOKED[] = false
+    @info "Infiltrator.jl hook removed — @infiltrate uses default REPL prompt"
 end
 
 
@@ -1229,6 +1260,7 @@ function write_metadata(
     endpoint::String,
     stream_endpoint::String = "";
     spawned_by::String = "user",
+    mode::Symbol = :ipc,
 )
     meta_path = joinpath(SOCK_DIR, "$(session_id).json")
     meta = Dict{String,Any}(
@@ -1241,6 +1273,7 @@ function write_metadata(
         "stream_endpoint" => stream_endpoint,
         "started_at" => string(now()),
         "spawned_by" => spawned_by,
+        "mode" => string(mode),
     )
     open(meta_path, "w") do io
         # Simple JSON without dependency — just key-value pairs
@@ -1258,6 +1291,7 @@ function write_metadata(
 end
 
 function cleanup_files(session_id::String)
+    # Always clean up the metadata JSON. Socket files only exist in IPC mode.
     for ext in [".sock", "-stream.sock", ".json"]
         path = joinpath(SOCK_DIR, "$(session_id)$(ext)")
         isfile(path) && rm(path; force = true)
@@ -1347,9 +1381,9 @@ function _base_julia_args()::Vector{String}
     # Flags that take a separate value and should be combined into one token
     # (e.g. `-t 4,2` → `-t4,2`) to avoid the value being misinterpreted as a
     # positional script argument on restart.
-    const _VALUE_FLAGS = Set(["-t", "--threads", "-C", "--cpu-target",
-                              "-J", "--sysimage", "-O", "--optimize",
-                              "--gcthreads", "--heap-size-hint"])
+    _VALUE_FLAGS = Set(["-t", "--threads", "-C", "--cpu-target",
+                        "-J", "--sysimage", "-O", "--optimize",
+                        "--gcthreads", "--heap-size-hint"])
 
     result = [orig[1]]   # preserve exact Julia binary path
     i = 2
@@ -1709,6 +1743,12 @@ to override the TTY check.
   serve(tools=tools, namespace="todo_dev")    # branch A
   serve(tools=tools, namespace="todo_main")   # branch B
   ```
+- `mode::Symbol`: Transport mode — `:ipc` (default, local Unix socket) or
+  `:tcp` (network-accessible, for remote debugging).
+- `host::String`: Bind address for TCP mode (default `"127.0.0.1"`, localhost only).
+  Use `"0.0.0.0"` to accept connections from remote machines (no auth — use with care).
+- `port::Int`: Port for TCP mode (default `9876`). In TCP mode, the PUB socket
+  binds to `port + 1`.
 
 # Example
 ```julia
@@ -1717,6 +1757,9 @@ Gate.serve()
 
 # With custom tools
 Gate.serve(tools=[GateTool("send_key", my_key_handler)])
+
+# TCP mode for remote debugging (e.g. from a model server)
+Gate.serve(mode=:tcp, port=9876, force=true)
 ```
 """
 function serve(;
@@ -1728,7 +1771,12 @@ function serve(;
     allow_restart::Bool = true,
     spawned_by::String = "user",
     on_shutdown::Any = nothing,
+    infiltrator::Bool = true,
+    mode::Symbol = :ipc,
+    host::String = "127.0.0.1",
+    port::Int = 9876,
 )
+    mode in (:ipc, :tcp) || throw(ArgumentError("mode must be :ipc or :tcp, got :$mode"))
     _serve(;
         name = basename(dirname(something(Base.active_project(), "julia"))),
         session_id,
@@ -1739,6 +1787,10 @@ function serve(;
         allow_restart,
         spawned_by,
         on_shutdown,
+        infiltrator,
+        mode,
+        host,
+        port,
     )
 end
 
@@ -1752,12 +1804,17 @@ function _serve(;
     allow_restart::Bool = true,
     spawned_by::String = "user",
     on_shutdown::Any = nothing,
+    infiltrator::Bool = true,
+    mode::Symbol = :ipc,
+    host::String = "127.0.0.1",
+    port::Int = 9876,
 )
     # Capture original argv for restart replay (once, on first call)
     _capture_original_argv()
 
     # Interactive gate: skip scripts, -e commands, precompilation, workers, etc.
-    if !force && !isinteractive()
+    # TCP mode always forces — it's designed for non-interactive processes (model servers).
+    if !force && mode != :tcp && !isinteractive()
         @debug "Skipping gate: non-interactive session"
         return nothing
     end
@@ -1819,8 +1876,9 @@ function _serve(;
     # Store session tools and namespace
     _SESSION_TOOLS[] = tools
     _SESSION_NAMESPACE[] = namespace
-    _ALLOW_MIRROR[] = allow_mirror
-    _ALLOW_RESTART[] = allow_restart
+    # TCP mode: disable mirror and restart (they're IPC/REPL-specific features)
+    _ALLOW_MIRROR[] = mode == :tcp ? false : allow_mirror
+    _ALLOW_RESTART[] = mode == :tcp ? false : allow_restart
     _ON_SHUTDOWN[] = on_shutdown
 
     # Ensure socket directory exists
@@ -1851,10 +1909,17 @@ function _serve(;
     socket.rcvtimeo = 1000
     socket.linger = 0
 
-    # Bind IPC endpoint
-    sock_path = joinpath(SOCK_DIR, "$(sid).sock")
-    endpoint = "ipc://$(sock_path)"
-    bind(socket, endpoint)
+    # Bind endpoint — IPC (local socket file) or TCP (network port)
+    if mode == :tcp
+        endpoint = "tcp://$(host):$(port)"
+        bind(socket, endpoint)
+        stream_endpoint = "tcp://$(host):$(port + 1)"
+    else
+        sock_path = joinpath(SOCK_DIR, "$(sid).sock")
+        endpoint = "ipc://$(sock_path)"
+        bind(socket, endpoint)
+        stream_endpoint = "ipc://$(joinpath(SOCK_DIR, "$(sid)-stream.sock"))"
+    end
 
     # Create PUB socket for streaming stdout/stderr to TUI.
     # sndhwm=0: unlimited send buffer — never drop messages under load.
@@ -1862,13 +1927,11 @@ function _serve(;
     pub_socket = Socket(ctx, PUB)
     pub_socket.sndhwm = 0
     pub_socket.linger = 0
-    stream_path = joinpath(SOCK_DIR, "$(sid)-stream.sock")
-    stream_endpoint = "ipc://$(stream_path)"
     bind(pub_socket, stream_endpoint)
     _STREAM_SOCKET[] = pub_socket
 
     # Write metadata file for session discovery
-    write_metadata(sid, name, endpoint, stream_endpoint; spawned_by)
+    write_metadata(sid, name, endpoint, stream_endpoint; spawned_by, mode)
 
     # Register cleanup
     atexit(() -> stop())
@@ -1927,22 +1990,25 @@ function _serve(;
 
     # Install Infiltrator hook if available — makes @infiltrate route through
     # the gate's breakpoint protocol instead of opening an interactive prompt.
-    try
-        _install_infiltrator_hook!()
-    catch
-        # Infiltrator not loaded yet — will be picked up by package callback below.
-    end
-    # Register a package-load callback so the hook installs as soon as Infiltrator
-    # gets loaded (e.g. via `using GateToolTest` from the REPL).
-    push!(Base.package_callbacks, function (pkgid)
-        _RUNNING[] || return
-        _INFILTRATOR_HOOKED[] && return
-        pkgid.name == "Infiltrator" || return
+    if infiltrator
         try
             _install_infiltrator_hook!()
         catch
+            # Infiltrator not loaded yet — will be picked up by package callback below.
         end
-    end)
+        # Register a package-load callback so the hook installs as soon as Infiltrator
+        # gets loaded (e.g. via `using GateToolTest` from the REPL).
+        push!(Base.package_callbacks, function (pkgid)
+            _RUNNING[] || return
+            _INFILTRATOR_HOOKED[] && return
+            _INFILTRATOR_DISABLED[] && return
+            pkgid.name == "Infiltrator" || return
+            try
+                _install_infiltrator_hook!()
+            catch
+            end
+        end)
+    end
 
     # Override Profile peek report to write to a file instead of stderr.
     # When SIGINFO/SIGUSR1 fires, the C runtime prints a small message to
@@ -1959,6 +2025,11 @@ function _serve(;
     printstyled("Kaimon gate "; color = :green, bold = true)
     printstyled("connected"; color = :green)
     printstyled(" ($name)\n"; color = :light_black)
+    if mode == :tcp
+        printstyled("  TCP mode: "; color = :light_black)
+        printstyled("$endpoint"; color = :cyan)
+        printstyled(" (PUB: $stream_endpoint)\n"; color = :light_black)
+    end
     if _MIRROR_REPL[]
         printstyled("  host REPL mirroring enabled\n"; color = :light_black)
     end
