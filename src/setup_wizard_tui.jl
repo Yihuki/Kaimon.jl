@@ -812,7 +812,7 @@ function do_save!(m::SetupWizardModel)
         _save_personality(global_path, m.mode)
         # Persist the theme matching the personality
         theme_name = m.mode == STANDARD ? "kaneda" : m.mode == GENTLE ? "catppuccin" : "neuromancer"
-        save_theme(theme_name)
+        Tachikoma.save_theme(theme_name)
         m.save_success = true
         m.save_message = "Config saved to $global_path"
     catch e
