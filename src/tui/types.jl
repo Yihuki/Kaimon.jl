@@ -103,6 +103,19 @@ end
 
     # Tabs: 1=Server, 2=Sessions, 3=Activity, 4=Config
     active_tab::Int = 1
+    tab_bar::TabBar = TabBar(
+        Vector{Span}[
+            [Span("1", tstyle(:warning)), Span(" Server", tstyle(:text))],
+            [Span("2", tstyle(:warning)), Span(" Sessions", tstyle(:text))],
+            [Span("3", tstyle(:warning)), Span(" Activity", tstyle(:text))],
+            [Span("4", tstyle(:warning)), Span(" Search", tstyle(:text))],
+            [Span("5", tstyle(:warning)), Span(" Tests", tstyle(:text))],
+            [Span("6", tstyle(:warning)), Span(" Config", tstyle(:text))],
+            [Span("7", tstyle(:warning)), Span(" Debug", tstyle(:text))],
+            [Span("8", tstyle(:warning)), Span(" Extensions", tstyle(:text))],
+            [Span("9", tstyle(:warning)), Span(" Advanced", tstyle(:text))],
+        ],
+    )
 
     # REPL connections (managed by ConnectionManager)
     conn_mgr::Union{ConnectionManager,Nothing} = nothing
@@ -226,7 +239,6 @@ end
 
     # Tab bar area for mouse click detection
     _tab_bar_area::Rect = Rect()
-    _tab_visible_range::UnitRange{Int} = 1:7  # which tabs are currently rendered (for mouse hit + overflow)
 
     # Server log scroll pane
     log_pane::Union{ScrollPane,Nothing} = nothing
@@ -422,6 +434,13 @@ end
     # Extension detail view (Enter to expand)
     ext_detail_open::Bool = false
     ext_detail_pane::Union{ScrollPane,Nothing} = nothing
+
+    # Extension two-pane detail (right side ScrollPane)
+    ext_detail_side_pane::Union{ScrollPane,Nothing} = nothing
+    _ext_detail_side_synced::UInt64 = UInt64(0)  # hash for rebuild detection
+
+    # Extension TUI panel (overlay from tui_file)
+    ext_panel::Any = nothing  # Union{ActiveExtPanel, Nothing}
 
     # ── Code staleness (Revise reload) ──
     _code_stale::Bool = false

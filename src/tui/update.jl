@@ -38,11 +38,12 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
     end
 
     # Tab bar click detection
-    if evt.button == mouse_left &&
-       evt.action == mouse_press &&
-       Base.contains(m._tab_bar_area, evt.x, evt.y)
-        tab = _tab_hit(m, evt.x)
-        tab > 0 && (_switch_tab!(m, tab); return)
+    if Base.contains(m._tab_bar_area, evt.x, evt.y)
+        result = handle_mouse!(m.tab_bar, evt)
+        if result == :changed
+            _switch_tab!(m, m.tab_bar.active)
+            return
+        end
     end
 
     # Route mouse events to scroll panes and resizable layouts
@@ -152,6 +153,12 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
                 handle_mouse!(m.ext_detail_pane, evt)
             else
                 handle_resize!(m.extensions_layout, evt)
+                # Route mouse to side detail ScrollPane
+                _er = m.extensions_layout.rects
+                if m.ext_detail_side_pane !== nothing &&
+                   length(_er) >= 2 && Base.contains(_er[2], evt.x, evt.y)
+                    handle_mouse!(m.ext_detail_side_pane, evt)
+                end
             end
         end
         9 => begin
@@ -378,6 +385,16 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
         return
     end
 
+    # When an extension TUI panel is open, capture all input
+    if m.active_tab == 8 && m.ext_panel !== nothing
+        if evt.key == :escape
+            close_ext_panel!(m)
+        else
+            _ext_panel_handle_key!(m.ext_panel, evt)
+        end
+        return
+    end
+
     # When an extension flow is active, route all input there
     if m.active_tab == 8 && m.ext_flow != :idle
         evt.key == :escape && (m.ext_flow = :idle; return)
@@ -534,7 +551,9 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
                 end
                 5 => (_handle_tests_escape!(m); return)
                 8 => begin
-                    if m.ext_flow != :idle
+                    if m.ext_panel !== nothing
+                        close_ext_panel!(m)
+                    elseif m.ext_flow != :idle
                         m.ext_flow = :idle
                     elseif m.ext_detail_open
                         m.ext_detail_open = false
@@ -971,25 +990,3 @@ function _switch_tab!(m::KaimonModel, tab::Int)
     end
 end
 
-# Tab label lengths for mouse hit testing (must match the TabBar labels in view)
-const _TAB_LABEL_LENS = [8, 10, 10, 8, 7, 8, 7, 12, 10]  # "1 Server", "2 Sessions", "3 Activity", "4 Search", "5 Tests", "6 Config", "7 Debug", "8 Extensions", "9 Advanced"
-const _TAB_SEPARATOR_LEN = 3  # " │ "
-
-"""Determine which tab (1-7) was clicked at `click_x`, or 0 if none."""
-function _tab_hit(m::KaimonModel, click_x::Int)
-    vis = m._tab_visible_range
-    has_left = first(vis) > 1
-    # Start x after the left "…" indicator if present
-    x = m._tab_bar_area.x + (has_left ? 1 : 0)
-    for real_idx in vis
-        if real_idx > first(vis)
-            x += _TAB_SEPARATOR_LEN
-        end
-        tab_w = _TAB_LABEL_LENS[real_idx] + 2
-        if click_x >= x && click_x < x + tab_w
-            return real_idx
-        end
-        x += tab_w
-    end
-    return 0
-end

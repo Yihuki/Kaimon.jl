@@ -262,94 +262,15 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
     content_area = rows[2]
     status_area = rows[3]
 
-    # ── Tab bar (scrolling to keep active tab visible) ──
+    # ── Tab bar ──
     m._tab_bar_area = tab_area
-    _tab_labels = [
-        [Span("1", tstyle(:warning)), Span(" Server", tstyle(:text))],
-        [Span("2", tstyle(:warning)), Span(" Sessions", tstyle(:text))],
-        [Span("3", tstyle(:warning)), Span(" Activity", tstyle(:text))],
-        [Span("4", tstyle(:warning)), Span(" Search", tstyle(:text))],
-        [Span("5", tstyle(:warning)), Span(" Tests", tstyle(:text))],
-        [Span("6", tstyle(:warning)), Span(" Config", tstyle(:text))],
-        [
-            Span("7", tstyle(:warning)),
-            Span(
-                " Debug",
-                m.debug_state == :paused ? tstyle(:error, bold = true) : tstyle(:text),
-            ),
-        ],
-        [Span("8", tstyle(:warning)), Span(" Extensions", tstyle(:text))],
-        [Span("9", tstyle(:warning)), Span(" Advanced", tstyle(:text))],
-    ]
 
-    # Compute visible tab window that fits in tab_area and includes the active tab.
-    # Each tab = label_len + 2; separators = 3 chars between adjacent tabs.
-    # Reserve 1 char on each side that has hidden tabs for "…" indicator.
-    n_tabs = length(_tab_labels)
-    _tab_widths = [_TAB_LABEL_LENS[i] + 2 for i = 1:n_tabs]  # per-tab rendered width
+    # Sync active tab and dynamic label styles
+    m.tab_bar.active = m.active_tab
+    debug_style = m.debug_state == :paused ? tstyle(:error, bold = true) : tstyle(:text)
+    m.tab_bar.labels[7] = [Span("7", tstyle(:warning)), Span(" Debug", debug_style)]
 
-    function _tabs_fit(lo, hi, avail)
-        w = sum(_tab_widths[lo:hi]) + _TAB_SEPARATOR_LEN * max(0, hi - lo)
-        w <= avail
-    end
-
-    avail_w = tab_area.width
-    vis_lo, vis_hi = 1, n_tabs
-
-    if !_tabs_fit(1, n_tabs, avail_w)
-        # Not all tabs fit — find a window containing m.active_tab
-        at = m.active_tab
-
-        # Start with just the active tab, expand outward
-        vis_lo, vis_hi = at, at
-
-        # Try to expand right first, then left, alternating
-        while true
-            expanded = false
-            if vis_hi < n_tabs
-                # Cost of adding one tab on the right: tab width + separator
-                need_left = vis_lo > 1 ? 1 : 0   # reserve for left "…"
-                need_right = (vis_hi + 1) < n_tabs ? 1 : 0  # reserve for right "…"
-                test_avail = avail_w - need_left - need_right
-                if _tabs_fit(vis_lo, vis_hi + 1, test_avail)
-                    vis_hi += 1
-                    expanded = true
-                end
-            end
-            if vis_lo > 1
-                need_left = (vis_lo - 1) > 1 ? 1 : 0
-                need_right = vis_hi < n_tabs ? 1 : 0
-                test_avail = avail_w - need_left - need_right
-                if _tabs_fit(vis_lo - 1, vis_hi, test_avail)
-                    vis_lo -= 1
-                    expanded = true
-                end
-            end
-            !expanded && break
-        end
-    end
-
-    m._tab_visible_range = vis_lo:vis_hi
-    has_left_overflow = vis_lo > 1
-    has_right_overflow = vis_hi < n_tabs
-
-    # Render the visible slice into a sub-area, leaving room for "…" indicators
-    render_x = tab_area.x + (has_left_overflow ? 1 : 0)
-    render_w = tab_area.width - (has_left_overflow ? 1 : 0) - (has_right_overflow ? 1 : 0)
-    if render_w > 0
-        sub_area = Rect(render_x, tab_area.y, render_w, 1)
-        vis_labels = _tab_labels[vis_lo:vis_hi]
-        vis_active = m.active_tab - vis_lo + 1  # active index within the visible slice
-        render(TabBar(vis_labels; active = vis_active), sub_area, buf)
-    end
-
-    # Draw overflow indicators
-    if has_left_overflow
-        set_char!(buf, tab_area.x, tab_area.y, '…', tstyle(:text_dim))
-    end
-    if has_right_overflow
-        set_char!(buf, right(tab_area), tab_area.y, '…', tstyle(:text_dim))
-    end
+    render(m.tab_bar, tab_area, buf)
 
     # ── Drain cross-thread buffers every frame (regardless of active tab) ──
     _drain_stress_output!(m)

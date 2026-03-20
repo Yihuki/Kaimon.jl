@@ -220,6 +220,21 @@ function _diagnose_activity(diag::ProcessDiagnostics)::String
     end
 end
 
+# ── Event Listeners ──────────────────────────────────────────────────────────
+
+"""
+    EventListener
+
+A subscriber for gate stream events. Kaimon forwards matching messages
+to the listener's callback using Serialization + zstd over a ZMQ PUSH socket
+(for out-of-process listeners) or a direct callback (for in-process).
+"""
+struct EventListener
+    id::String                      # unique identifier (e.g. extension namespace)
+    topics::Set{String}             # channel names to match ("" = all)
+    callback::Function              # (channel::String, data::String, session_name::String) -> Nothing
+end
+
 # ── Connection Manager ────────────────────────────────────────────────────────
 
 mutable struct ConnectionManager
@@ -233,6 +248,8 @@ mutable struct ConnectionManager
     on_sessions_changed::Union{Function,Nothing}  # called when session list changes
     eval_history::Vector{EvalRecord}       # ring buffer, capped at 64 entries
     eval_history_lock::ReentrantLock
+    event_listeners::Vector{EventListener}
+    event_listeners_lock::ReentrantLock
 end
 
 function ConnectionManager(; sock_dir::String = joinpath(kaimon_cache_dir(), "sock"))
@@ -247,7 +264,55 @@ function ConnectionManager(; sock_dir::String = joinpath(kaimon_cache_dir(), "so
         nothing,
         EvalRecord[],
         ReentrantLock(),
+        EventListener[],
+        ReentrantLock(),
     )
+end
+
+"""
+    add_event_listener!(mgr, listener) -> Nothing
+
+Register an event listener that receives forwarded gate stream messages.
+"""
+function add_event_listener!(mgr::ConnectionManager, listener::EventListener)
+    lock(mgr.event_listeners_lock) do
+        # Replace existing listener with same id
+        filter!(l -> l.id != listener.id, mgr.event_listeners)
+        push!(mgr.event_listeners, listener)
+    end
+    return nothing
+end
+
+"""
+    remove_event_listener!(mgr, id) -> Bool
+
+Remove an event listener by id. Returns true if found.
+"""
+function remove_event_listener!(mgr::ConnectionManager, id::String)
+    lock(mgr.event_listeners_lock) do
+        n = length(mgr.event_listeners)
+        filter!(l -> l.id != id, mgr.event_listeners)
+        return length(mgr.event_listeners) < n
+    end
+end
+
+"""
+    _notify_event_listeners(mgr, channel, data, session_name)
+
+Forward a stream message to all matching event listeners.
+"""
+function _notify_event_listeners(mgr::ConnectionManager, channel::String, data::String, session_name::String)
+    lock(mgr.event_listeners_lock) do
+        for listener in mgr.event_listeners
+            if isempty(listener.topics) || channel in listener.topics
+                try
+                    Base.invokelatest(listener.callback, channel, data, session_name)
+                catch e
+                    @debug "Event listener '$(listener.id)' error" exception=e
+                end
+            end
+        end
+    end
 end
 
 """Fire the sessions-changed callback (if registered). Swallows errors."""
@@ -332,7 +397,7 @@ end
 Delete .json, .sock, and -stream.sock files for a session.
 """
 function _remove_session_files(sock_dir::String, session_id::String)
-    for suffix in (".json", ".sock", "-stream.sock")
+    for suffix in (".json", ".sock", "-stream.sock", ".events.sock")
         f = joinpath(sock_dir, session_id * suffix)
         isfile(f) && try
             rm(f)
@@ -1123,6 +1188,7 @@ Returns a vector of `(channel, data, session_name)` tuples.
 """
 function drain_stream_messages!(mgr::ConnectionManager)
     messages = NamedTuple{(:channel, :data, :session_name),Tuple{String,String,String}}[]
+    listener_events = Tuple{String,String,String}[]  # (channel, data, session_name) for deferred notification
     lock(mgr.lock) do
         for conn in mgr.connections
             conn.sub_socket === nothing && continue
@@ -1184,6 +1250,10 @@ function drain_stream_messages!(mgr::ConnectionManager)
                     conn.debug_paused = false
                 end
 
+                # Collect for deferred event listener notification (outside mgr.lock)
+                dname_for_listener = isempty(conn.display_name) ? conn.name : conn.display_name
+                push!(listener_events, (ch, data, dname_for_listener))
+
                 if !routed
                     dname = isempty(conn.display_name) ? conn.name : conn.display_name
                     push!(messages, (channel = ch, data = data, session_name = dname))
@@ -1206,6 +1276,10 @@ function drain_stream_messages!(mgr::ConnectionManager)
                 end
             end
         end
+    end
+    # Notify event listeners outside mgr.lock to avoid holding it during ZMQ sends
+    for (ch, data, sname) in listener_events
+        _notify_event_listeners(mgr, ch, data, sname)
     end
     return messages
 end

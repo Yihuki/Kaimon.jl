@@ -57,6 +57,34 @@ function _build_extension_script(config::ExtensionConfig)
     else
         ""
     end
+    event_hook = if !isempty(m.event_topics)
+        # If the extension wants events, start a PULL socket after serve()
+        # and call the module's event handler in a background loop.
+        """
+    # Event forwarding: create PULL socket for Kaimon to push events to
+    using Serialization
+    let sid = Kaimon.Gate._SESSION_ID[]
+        sock_path = joinpath(Kaimon.Gate.SOCK_DIR, "\$(sid).events.sock")
+        pull = Kaimon.ZMQ.Socket(Kaimon.Gate._GATE_CONTEXT[], Kaimon.ZMQ.PULL)
+        Kaimon.ZMQ.bind(pull, "ipc://\$sock_path")
+        @async begin
+            while true
+                try
+                    raw = Kaimon.ZMQ.recv(pull)
+                    msg = deserialize(IOBuffer(raw))
+                    $(m.module_name).on_event(msg.channel, msg.data, msg.session_name)
+                catch e
+                    e isa InterruptException && break
+                    @debug "Event recv error" exception=e
+                    sleep(0.1)
+                end
+            end
+        end
+    end"""
+    else
+        ""
+    end
+
     return """
     try
         using Revise
@@ -66,6 +94,7 @@ function _build_extension_script(config::ExtensionConfig)
     using $(m.module_name)
     tools = $(m.module_name).$(m.tools_function)(Kaimon.Gate.GateTool)
     Kaimon.Gate.serve(tools=tools, namespace=$(repr(m.namespace)), force=true, allow_mirror=false, allow_restart=false, spawned_by="extension"$on_shutdown_kwarg)
+    $event_hook
     while true; sleep(60); end
     """
 end
@@ -185,6 +214,10 @@ function stop_extension!(ext::ManagedExtension; timeout::Float64 = 5.0)
         end
     end
 
+    # Clean up event forwarding before clearing state
+    mgr = GATE_CONN_MGR[]
+    mgr !== nothing && _cleanup_event_listener!(mgr, ext)
+
     ext.process = nothing
     ext.status = :stopped
     ext.session_key = ""
@@ -231,6 +264,125 @@ function restart_extension!(ext::ManagedExtension)
     spawn_extension!(ext)
 end
 
+# ── Event Forwarding ─────────────────────────────────────────────────────────
+
+# Active PUSH sockets for event forwarding, keyed by extension namespace
+const _EXT_EVENT_SOCKETS = Dict{String,ZMQ.Socket}()
+const _EXT_EVENT_SOCKETS_LOCK = ReentrantLock()
+
+"""
+    _event_socket_path(session_id::String) -> String
+
+Convention-based IPC path for the extension's event PULL socket.
+"""
+function _event_socket_path(session_id::String)
+    joinpath(kaimon_cache_dir(), "sock", "$(session_id).events.sock")
+end
+
+"""
+    _maybe_register_event_listener!(conn_mgr, ext)
+
+If the extension declares event_topics, connect a PUSH socket to the
+extension's PULL socket and register an event listener on the connection manager.
+"""
+function _maybe_register_event_listener!(conn_mgr, ext::ManagedExtension)
+    topics = ext.config.manifest.event_topics
+    isempty(topics) && return
+
+    ns = ext.config.manifest.namespace
+
+    # Find the full session_id for the socket path (session_key is only first 8 chars)
+    full_sid = ""
+    for conn in connected_sessions(conn_mgr)
+        if conn.namespace == ns
+            full_sid = conn.session_id
+            break
+        end
+    end
+    isempty(full_sid) && return
+    sock_path = _event_socket_path(full_sid)
+
+    # Wait briefly for the extension to create its PULL socket
+    # (it may still be initializing)
+    deadline = time() + 5.0
+    while !ispath(sock_path) && time() < deadline
+        sleep(0.2)
+    end
+    if !ispath(sock_path)
+        _push_log!(:warn, "Extension '$ns' event socket not found at $sock_path")
+        return
+    end
+
+    try
+        push_sock = Socket(conn_mgr.zmq_context, PUSH)
+        push_sock.sndtimeo = 100  # 100ms send timeout — don't block on slow extensions
+        push_sock.linger = 0
+        push_sock.sndhwm = 1000   # drop events if extension can't keep up
+        ZMQ.connect(push_sock, "ipc://$sock_path")
+
+        lock(_EXT_EVENT_SOCKETS_LOCK) do
+            # Close any existing socket for this namespace
+            if haskey(_EXT_EVENT_SOCKETS, ns)
+                try; close(_EXT_EVENT_SOCKETS[ns]); catch; end
+            end
+            _EXT_EVENT_SOCKETS[ns] = push_sock
+        end
+
+        topic_set = Set{String}(topics)
+        callback = function(channel::String, data::String, session_name::String)
+            sock = lock(_EXT_EVENT_SOCKETS_LOCK) do
+                get(_EXT_EVENT_SOCKETS, ns, nothing)
+            end
+            sock === nothing && return
+            try
+                io = IOBuffer()
+                serialize(io, (channel=channel, data=data, session_name=session_name))
+                send(sock, Message(take!(io)))
+            catch
+                # Send failed — extension may be gone, will be cleaned up on stop
+            end
+        end
+        listener = EventListener(ns, topic_set, callback)
+
+        add_event_listener!(conn_mgr, listener)
+        _push_log!(:info, "Extension '$ns' event forwarding registered (topics: $(join(topics, ", ")))")
+    catch e
+        _push_log!(:warn, "Failed to set up event forwarding for '$ns': $(sprint(showerror, e))")
+    end
+end
+
+"""
+    _cleanup_event_listener!(conn_mgr, ext)
+
+Remove the event listener and close the PUSH socket for an extension.
+"""
+function _cleanup_event_listener!(conn_mgr, ext::ManagedExtension)
+    ns = ext.config.manifest.namespace
+    isempty(ext.config.manifest.event_topics) && return
+
+    if conn_mgr !== nothing
+        remove_event_listener!(conn_mgr, ns)
+    end
+
+    lock(_EXT_EVENT_SOCKETS_LOCK) do
+        if haskey(_EXT_EVENT_SOCKETS, ns)
+            try; close(_EXT_EVENT_SOCKETS[ns]); catch; end
+            delete!(_EXT_EVENT_SOCKETS, ns)
+        end
+    end
+
+    # Remove stale event socket file so a restart gets a clean path
+    if conn_mgr !== nothing && !isempty(ext.session_key)
+        for conn in connected_sessions(conn_mgr)
+            if conn.namespace == ns
+                sock_path = _event_socket_path(conn.session_id)
+                try; isfile(sock_path) && rm(sock_path); catch; end
+                break
+            end
+        end
+    end
+end
+
 # ── Monitor ──────────────────────────────────────────────────────────────────
 
 const _EXTENSION_RESTART_BACKOFF = [5.0, 10.0, 30.0, 60.0]  # seconds
@@ -271,6 +423,13 @@ function _monitor_extensions!(conn_mgr)
                             :info,
                             "Extension '$ns' connected (session=$(ext.session_key))",
                         )
+                        # Register event listener if extension declares event_topics
+                        # (async to avoid blocking the monitor lock with socket wait)
+                        if !isempty(ext.config.manifest.event_topics)
+                            let ext=ext, conn_mgr=conn_mgr
+                                Threads.@spawn _maybe_register_event_listener!(conn_mgr, ext)
+                            end
+                        end
                         break
                     end
                 end

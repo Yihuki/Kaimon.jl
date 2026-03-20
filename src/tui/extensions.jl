@@ -8,12 +8,21 @@
 #   [a]dd — register a new extension via path input
 #   [d]elete — remove selected extension
 #   [s]tart / [x]stop / [r]estart — lifecycle control
+#   [u]i — open extension TUI panel (if tui_file defined in kaimon.toml)
 #   [Enter] — open full detail view with tool documentation
-#   [Esc] — close detail view / cancel flow
+#   [Esc] — close detail view / panel / cancel flow
 
 # ── View ─────────────────────────────────────────────────────────────────────
 
 function view_extensions(m::KaimonModel, area::Rect, buf::Buffer)
+    # Extension TUI panel takes over the whole content area
+    if m.ext_panel !== nothing
+        m.ext_panel.ctx.tick = m.tick
+        _ext_panel_update!(m.ext_panel, m.tick)
+        _ext_panel_view!(m.ext_panel, area, buf)
+        return
+    end
+
     if m.ext_detail_open
         _view_ext_detail_full(m, area, buf)
     else
@@ -86,8 +95,9 @@ function _view_extensions_list(m::KaimonModel, area::Rect, buf::Buffer)
             buf,
             inner.x + 1,
             hint_y,
-            "[a]dd [d]el [e]nable [t]auto [s] [x] [r]",
-            tstyle(:text_dim),
+            "[a]dd [d]el [e]nable [t]auto [s] [x] [r] [u]i",
+            tstyle(:text_dim);
+            max_x=right(inner),
         )
     end
 end
@@ -131,128 +141,105 @@ function _view_extensions_detail(m::KaimonModel, area::Rect, buf::Buffer)
 
     if isempty(extensions) || m.ext_selected < 1 || m.ext_selected > length(extensions)
         set_string!(buf, inner.x + 1, inner.y, "Select an extension.", tstyle(:text_dim))
+        m.ext_detail_side_pane = nothing
         return
     end
 
+    _sync_ext_detail_side_pane!(m, extensions)
+    pane = m.ext_detail_side_pane
+    pane !== nothing && render(pane, inner, buf)
+end
+
+"""Build/refresh the ScrollPane for the two-pane extension detail view."""
+function _sync_ext_detail_side_pane!(m::KaimonModel, extensions)
     ext = extensions[m.ext_selected]
     manifest = ext.config.manifest
     entry = ext.config.entry
-    y = inner.y
-    x = inner.x + 1
-    w = inner.width - 2
+
+    # Rebuild detection: hash key fields that change
+    h = hash((
+        m.ext_selected, ext.status, ext.restart_count, ext.session_key,
+        ext.process !== nothing && process_running(ext.process),
+        length(ext.error_log),
+        ext.status == :running ? round(Int, time() - ext.started_at) : 0,
+    ))
+    if m.ext_detail_side_pane !== nothing && m._ext_detail_side_synced == h
+        return
+    end
+    m._ext_detail_side_synced = h
+
+    lines = Vector{Span}[]
     label_w = 14
 
-    # Name / namespace
-    set_string!(buf, x, y, rpad("Namespace", label_w), tstyle(:text_dim))
-    set_string!(buf, x + label_w, y, manifest.namespace, tstyle(:accent, bold = true))
-    y += 1
+    function _row!(label, value, vstyle=tstyle(:text))
+        push!(lines, [Span(rpad(label, label_w), tstyle(:text_dim)), Span(value, vstyle)])
+    end
 
-    # Module
-    set_string!(buf, x, y, rpad("Module", label_w), tstyle(:text_dim))
-    set_string!(buf, x + label_w, y, manifest.module_name, tstyle(:text))
-    y += 1
+    _row!("Namespace", manifest.namespace, tstyle(:accent, bold = true))
+    _row!("Module", manifest.module_name)
+    _row!("Project", _short_path(entry.project_path))
 
-    # Project path
-    set_string!(buf, x, y, rpad("Project", label_w), tstyle(:text_dim))
-    path_display = _short_path(entry.project_path)
-    set_string!(buf, x + label_w, y, first(path_display, w - label_w), tstyle(:text))
-    y += 1
-
-    # Description (if present)
+    # Description (word-wrapped)
     if !isempty(manifest.description)
-        set_string!(buf, x, y, rpad("Description", label_w), tstyle(:text_dim))
-        desc_avail = w - label_w
-        desc_text = first(manifest.description, desc_avail)
-        set_string!(buf, x + label_w, y, desc_text, tstyle(:text))
-        y += 1
-        # Wrap remaining description
-        remaining = manifest.description
-        if length(remaining) > desc_avail
-            remaining = remaining[nextind(remaining, 0, desc_avail + 1):end]
-            while !isempty(remaining) && y <= bottom(inner)
-                chunk = first(remaining, desc_avail)
-                set_string!(buf, x + label_w, y, chunk, tstyle(:text))
-                y += 1
-                if length(remaining) > desc_avail
-                    remaining = remaining[nextind(remaining, 0, desc_avail + 1):end]
-                else
-                    break
-                end
+        desc_lines = _wrap_text(manifest.description, 50)
+        if !isempty(desc_lines)
+            push!(lines, [
+                Span(rpad("Description", label_w), tstyle(:text_dim)),
+                Span(desc_lines[1], tstyle(:text)),
+            ])
+            for i in 2:length(desc_lines)
+                push!(lines, [Span(" " ^ label_w * desc_lines[i], tstyle(:text))])
             end
         end
     end
 
-    # Status
     status_icon, status_style = _ext_status_display(ext.status)
-    set_string!(buf, x, y, rpad("Status", label_w), tstyle(:text_dim))
-    set_string!(buf, x + label_w, y, "$status_icon $(ext.status)", status_style)
-    y += 1
+    _row!("Status", "$status_icon $(ext.status)", status_style)
 
-    # PID
     pid_str = if ext.process !== nothing && process_running(ext.process)
         string(getpid(ext.process))
     else
         "—"
     end
-    set_string!(buf, x, y, rpad("PID", label_w), tstyle(:text_dim))
-    set_string!(buf, x + label_w, y, pid_str, tstyle(:text))
-    y += 1
+    _row!("PID", pid_str)
 
-    # Uptime / restart count
     if ext.status == :running
-        set_string!(buf, x, y, rpad("Uptime", label_w), tstyle(:text_dim))
-        set_string!(buf, x + label_w, y, format_uptime(time() - ext.started_at), tstyle(:text))
-        y += 1
+        _row!("Uptime", format_uptime(time() - ext.started_at))
     end
+    _row!("Restarts", string(ext.restart_count))
 
-    set_string!(buf, x, y, rpad("Restarts", label_w), tstyle(:text_dim))
-    set_string!(buf, x + label_w, y, string(ext.restart_count), tstyle(:text))
-    y += 1
-
-    # Gate session
-    set_string!(buf, x, y, rpad("Session", label_w), tstyle(:text_dim))
     sess = isempty(ext.session_key) ? "—" : ext.session_key
-    set_string!(buf, x + label_w, y, sess, tstyle(:text))
-    y += 1
+    _row!("Session", sess)
 
-    # Config flags
-    set_string!(buf, x, y, rpad("Enabled", label_w), tstyle(:text_dim))
-    set_string!(
-        buf,
-        x + label_w,
-        y,
-        entry.enabled ? "yes" : "no",
-        tstyle(entry.enabled ? :success : :text_dim),
-    )
-    y += 1
+    _row!("Enabled", entry.enabled ? "yes" : "no",
+        tstyle(entry.enabled ? :success : :text_dim))
+    _row!("Auto-start", entry.auto_start ? "yes" : "no",
+        tstyle(entry.auto_start ? :success : :text_dim))
 
-    set_string!(buf, x, y, rpad("Auto-start", label_w), tstyle(:text_dim))
-    set_string!(
-        buf,
-        x + label_w,
-        y,
-        entry.auto_start ? "yes" : "no",
-        tstyle(entry.auto_start ? :success : :text_dim),
-    )
-    y += 2
+    push!(lines, Span[])  # blank line
 
-    # Tools function
-    set_string!(buf, x, y, rpad("Tools fn", label_w), tstyle(:text_dim))
-    set_string!(buf, x + label_w, y, manifest.tools_function, tstyle(:text))
-    y += 2
+    _row!("Tools fn", manifest.tools_function)
 
-    # Recent errors
-    if !isempty(ext.error_log)
-        set_string!(buf, x, y, "Recent Errors:", tstyle(:error, bold = true))
-        y += 1
-        for err in ext.error_log[max(1, end - 4):end]
-            y > bottom(inner) && break
-            set_string!(buf, x + 1, y, first(err, w - 2), tstyle(:error))
-            y += 1
-        end
-        y += 1
+    if !isempty(manifest.tui_file)
+        _row!("TUI panel", manifest.tui_file, tstyle(:accent))
     end
 
+    if !isempty(ext.error_log)
+        push!(lines, Span[])
+        push!(lines, [Span("Recent Errors:", tstyle(:error, bold = true))])
+        for err in ext.error_log[max(1, end - 4):end]
+            push!(lines, [Span("  $err", tstyle(:error))])
+        end
+    end
+
+    if m.ext_detail_side_pane === nothing
+        m.ext_detail_side_pane = ScrollPane(lines; following = false)
+    else
+        pane = m.ext_detail_side_pane::ScrollPane
+        content = pane.content::Vector{Vector{Span}}
+        empty!(content)
+        append!(content, lines)
+    end
 end
 
 # ── Full detail view (Enter to expand) ──────────────────────────────────────
@@ -682,6 +669,16 @@ end
 # ── Keyboard handling ────────────────────────────────────────────────────────
 
 function _handle_extensions_key!(m::KaimonModel, evt::KeyEvent)
+    # Extension TUI panel captures all input
+    if m.ext_panel !== nothing
+        if evt.key == :escape
+            close_ext_panel!(m)
+        else
+            _ext_panel_handle_key!(m.ext_panel, evt)
+        end
+        return
+    end
+
     # Flow captures all input
     if m.ext_flow != :idle
         _handle_ext_flow_input!(m, evt)
@@ -706,11 +703,27 @@ function _handle_extensions_key!(m::KaimonModel, evt::KeyEvent)
             ext = _get_selected_ext(m)
             ext !== nothing && restart_extension!(ext)
         end
+        'u' => begin
+            ext = _get_selected_ext(m)
+            ext !== nothing && ext.status == :running &&
+                !isempty(ext.config.manifest.tui_file) &&
+                open_ext_panel!(m, ext)
+        end
         _ => nothing
     end
 end
 
 function _handle_extensions_nav!(m::KaimonModel, evt::KeyEvent, fp::Int)
+    # Extension TUI panel captures all input
+    if m.ext_panel !== nothing
+        if evt.key == :escape
+            close_ext_panel!(m)
+        else
+            _ext_panel_handle_key!(m.ext_panel, evt)
+        end
+        return
+    end
+
     # Flow captures all input
     if m.ext_flow != :idle
         _handle_ext_flow_input!(m, evt)
@@ -730,8 +743,14 @@ function _handle_extensions_nav!(m::KaimonModel, evt::KeyEvent, fp::Int)
 
     if fp == 1  # list pane
         @match evt.key begin
-            :up => (m.ext_selected = max(1, m.ext_selected - 1))
-            :down => (m.ext_selected = min(n, m.ext_selected + 1))
+            :up => begin
+                m.ext_selected = max(1, m.ext_selected - 1)
+                m.ext_detail_side_pane = nothing
+            end
+            :down => begin
+                m.ext_selected = min(n, m.ext_selected + 1)
+                m.ext_detail_side_pane = nothing
+            end
             :enter => begin
                 m.ext_detail_open = true
                 m.ext_detail_pane = nothing  # force rebuild
@@ -739,12 +758,11 @@ function _handle_extensions_nav!(m::KaimonModel, evt::KeyEvent, fp::Int)
             _ => nothing
         end
     elseif fp == 2  # detail pane in two-pane mode
-        @match evt.key begin
-            :enter => begin
-                m.ext_detail_open = true
-                m.ext_detail_pane = nothing  # force rebuild
-            end
-            _ => nothing
+        if evt.key == :enter
+            m.ext_detail_open = true
+            m.ext_detail_pane = nothing  # force rebuild
+        elseif m.ext_detail_side_pane !== nothing
+            handle_key!(m.ext_detail_side_pane, evt)
         end
     end
 end
