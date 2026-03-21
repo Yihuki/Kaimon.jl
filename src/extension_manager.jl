@@ -123,7 +123,11 @@ function spawn_extension!(ext::ManagedExtension)
         env = copy(ENV)
         delete!(env, "JULIA_LOAD_PATH")
         delete!(env, "JULIA_PROJECT")
-        cmd = setenv(`$julia_bin -t auto --startup-file=no --project=$project -e $script`, env)
+        flags = ext.config.manifest.julia_flags
+        if isempty(flags)
+            flags = ["-t", "auto"]
+        end
+        cmd = setenv(`$julia_bin $flags --startup-file=no --project=$project -e $script`, env)
 
         # Redirect output to log file
         log_io = open(ext.log_file, "a")
@@ -143,11 +147,14 @@ function spawn_extension!(ext::ManagedExtension)
             end
             # Process exited — update status if we haven't already stopped it
             if ext.status in (:starting, :running)
+                prev = ext.status
                 ext.status = :crashed
-                _push_error!(ext, "Process exited at $(Dates.now())")
+                uptime_s = round(time() - ext.started_at, digits=1)
+                exit_code = try; proc.exitcode; catch; "unknown"; end
+                _push_error!(ext, "Process exited at $(Dates.now()) (exit=$exit_code)")
                 _push_log!(
                     :warn,
-                    "Extension '$(ext.config.manifest.namespace)' process exited unexpectedly",
+                    "Extension '$(ext.config.manifest.namespace)' crashed (was $prev, exit=$exit_code, after $(uptime_s)s)",
                 )
             end
             try
@@ -156,7 +163,8 @@ function spawn_extension!(ext::ManagedExtension)
             end
         end
 
-        _push_log!(:info, "Extension '$(ext.config.manifest.namespace)' subprocess spawning (PID=$(getpid(proc)))")
+        flags_str = join(flags, " ")
+        _push_log!(:info, "Extension '$(ext.config.manifest.namespace)' spawning (PID=$(getpid(proc)), flags: $flags_str)")
     catch e
         if log_io !== nothing
             try; close(log_io); catch; end
@@ -218,10 +226,11 @@ function stop_extension!(ext::ManagedExtension; timeout::Float64 = 5.0)
     mgr = GATE_CONN_MGR[]
     mgr !== nothing && _cleanup_event_listener!(mgr, ext)
 
+    uptime = ext.started_at > 0 ? format_uptime(time() - ext.started_at) : "n/a"
     ext.process = nothing
     ext.status = :stopped
     ext.session_key = ""
-    _push_log!(:info, "Extension '$(ext.config.manifest.namespace)' stopped")
+    _push_log!(:info, "Extension '$(ext.config.manifest.namespace)' stopped (uptime: $uptime)")
 end
 
 """
@@ -259,8 +268,10 @@ end
 Stop then re-spawn an extension.
 """
 function restart_extension!(ext::ManagedExtension)
+    ns = ext.config.manifest.namespace
     stop_extension!(ext)
     ext.restart_count += 1
+    _push_log!(:info, "Extension '$ns' restarting (attempt #$(ext.restart_count))")
     spawn_extension!(ext)
 end
 
@@ -419,9 +430,11 @@ function _monitor_extensions!(conn_mgr)
                         ext.status = :running
                         ext.session_key = short_key(conn)
                         ext.last_heartbeat = time()
+                        n_tools = length(conn.session_tools)
+                        elapsed = round(time() - ext.started_at, digits=1)
                         _push_log!(
                             :info,
-                            "Extension '$ns' connected (session=$(ext.session_key))",
+                            "Extension '$ns' ready — $n_tools tools, session=$(ext.session_key), started in $(elapsed)s",
                         )
                         # Register event listener if extension declares event_topics
                         # (async to avoid blocking the monitor lock with socket wait)
@@ -484,7 +497,9 @@ function start_extensions!()
         end
     end
     if !isempty(configs)
-        _push_log!(:info, "Loaded $(length(configs)) extension(s)")
+        n_auto = count(c -> c.entry.enabled && c.entry.auto_start, configs)
+        names = join([c.manifest.namespace for c in configs], ", ")
+        _push_log!(:info, "Loaded $(length(configs)) extension(s): $names ($n_auto auto-starting)")
     end
 end
 

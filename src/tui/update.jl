@@ -307,6 +307,12 @@ function Tachikoma.update!(m::KaimonModel, evt::TaskEvent)
                 _refresh_search_manage!(m)
             end
         end
+    elseif evt.id == :session_pong
+        # Health check pong arrived — trigger ECG blip for this session
+        info = evt.value
+        key = info.session_id[1:min(8, length(info.session_id))]
+        ecg = _get_ecg!(m, key)
+        ecg.pending_blips += 1
     end
 end
 

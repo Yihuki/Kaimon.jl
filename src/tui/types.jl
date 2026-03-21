@@ -418,7 +418,8 @@ end
     selected_tcp_gate::Int = 1
     tcp_gate_input::Any = nothing       # TextInput for host:port
     tcp_gate_name_input::Any = nothing  # TextInput for display name
-    _tcp_gate_field::Int = 1            # 1=host:port, 2=name
+    tcp_gate_token_input::Any = nothing # TextInput for auth token
+    _tcp_gate_field::Int = 1            # 1=host:port, 2=name, 3=token
 
     # ── Extensions tab (tab 8) ──
     ext_selected::Int = 1                 # selected extension in list

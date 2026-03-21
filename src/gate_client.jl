@@ -60,6 +60,7 @@ mutable struct REPLConnection
     diagnostics::Union{ProcessDiagnostics,Nothing}  # populated when stalled
     backtrace_sample::Union{String,Nothing}  # stack sample captured when stalled
     spawned_by::String           # "user" or "agent" — how this session was started
+    auth_token::String           # TCP auth token (empty = no auth)
 end
 
 function REPLConnection(;
@@ -76,6 +77,7 @@ function REPLConnection(;
     namespace::String = "",
     tools_hash::UInt64 = UInt64(0),
     spawned_by::String = "user",
+    auth_token::String = "",
 )
     t = now()
     REPLConnection(
@@ -111,6 +113,7 @@ function REPLConnection(;
         nothing, # diagnostics
         nothing, # backtrace_sample
         spawned_by,
+        auth_token,
     )
 end
 
@@ -250,9 +253,11 @@ mutable struct ConnectionManager
     eval_history_lock::ReentrantLock
     event_listeners::Vector{EventListener}
     event_listeners_lock::ReentrantLock
+    task_queue::Any  # Tachikoma.TaskQueue (or nothing if headless)
 end
 
-function ConnectionManager(; sock_dir::String = joinpath(kaimon_cache_dir(), "sock"))
+function ConnectionManager(; sock_dir::String = joinpath(kaimon_cache_dir(), "sock"),
+                             task_queue = nothing)
     ConnectionManager(
         REPLConnection[],
         Context(),
@@ -266,6 +271,7 @@ function ConnectionManager(; sock_dir::String = joinpath(kaimon_cache_dir(), "so
         ReentrantLock(),
         EventListener[],
         ReentrantLock(),
+        task_queue,
     )
 end
 
@@ -312,6 +318,18 @@ function _notify_event_listeners(mgr::ConnectionManager, channel::String, data::
                 end
             end
         end
+    end
+end
+
+"""Emit a TaskEvent via the task queue (if available). The task immediately returns `value`."""
+function _emit_event!(mgr::ConnectionManager, id::Symbol, value)
+    tq = mgr.task_queue
+    tq === nothing && return
+    try
+        spawn_task!(tq, id) do
+            value
+        end
+    catch
     end
 end
 
@@ -389,6 +407,56 @@ function _is_pid_alive(pid::Int)
     catch
         false
     end
+end
+
+"""
+    _update_session_metadata!(sock_dir, session_id; kwargs...)
+
+Update fields in an existing session metadata JSON file. Reads the file,
+merges the new fields, and writes it back. No-op if the file doesn't exist.
+"""
+function _update_session_metadata!(sock_dir::String, session_id::String; kwargs...)
+    meta_path = joinpath(sock_dir, "$(session_id).json")
+    isfile(meta_path) || return
+    try
+        meta = JSON.parsefile(meta_path)
+        for (k, v) in kwargs
+            meta[string(k)] = v
+        end
+        open(meta_path, "w") do io
+            JSON.print(io, meta, 2)
+            println(io)
+        end
+    catch
+    end
+end
+
+"""
+    _maybe_cleanup_stale_session!(sock_dir, session_id)
+
+Remove metadata files for a session if its last successful pong (or started_at)
+is older than 30 minutes. Returns true if cleaned up.
+"""
+function _maybe_cleanup_stale_session!(sock_dir::String, session_id::String)
+    meta_path = joinpath(sock_dir, "$(session_id).json")
+    isfile(meta_path) || return false
+    try
+        meta = JSON.parsefile(meta_path)
+        last_pong = get(meta, "last_pong", "")
+        ref_time = if !isempty(last_pong)
+            last_pong
+        else
+            get(meta, "started_at", "")
+        end
+        isempty(ref_time) && return false
+        age = now() - DateTime(ref_time, Dates.ISODateTimeFormat)
+        if Dates.value(age) > 30 * 60 * 1000
+            _remove_session_files(sock_dir, session_id)
+            return true
+        end
+    catch
+    end
+    return false
 end
 
 """
@@ -585,14 +653,15 @@ end
 """
     connect_tcp!(mgr::ConnectionManager, host::String, port::Int; name="") -> REPLConnection
 
-Manually connect to a TCP gate at `host:port`. The PUB stream socket is assumed
-to be on `port + 1` (matching `Gate.serve(mode=:tcp)` convention).
+Manually connect to a TCP gate at `host:port`. The PUB stream endpoint is
+resolved from the gate's pong response (supports ephemeral ports).
 
 Returns the connected `REPLConnection`, or throws on failure.
 """
-function connect_tcp!(mgr::ConnectionManager, host::String, port::Int; name::String = "")
+function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
+                      name::String = "", token::String = "")
     endpoint = "tcp://$(host):$(port)"
-    stream_endpoint = "tcp://$(host):$(port + 1)"
+    stream_endpoint = ""  # resolved from pong handshake
     sid = "tcp-$(host)-$(port)"
 
     # Check for existing connection to this endpoint
@@ -600,6 +669,20 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int; name::Str
         findfirst(c -> c.session_id == sid, mgr.connections)
     end
     existing !== nothing && error("Already connected to $endpoint")
+
+    # Resolve auth token: explicit > env var > security config
+    if isempty(token)
+        token = get(ENV, "KAIMON_GATE_TOKEN", "")
+    end
+    if isempty(token)
+        try
+            config = load_global_config()
+            if config.mode != :lax && !isempty(config.api_keys)
+                token = first(config.api_keys)
+            end
+        catch
+        end
+    end
 
     display_name = isempty(name) ? "$(host):$(port)" : name
     conn = REPLConnection(
@@ -613,10 +696,37 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int; name::Str
         julia_version = "",
         pid = 0,
         spawned_by = "user",
+        auth_token = token,
     )
 
     if !connect!(mgr, conn)
         error("Failed to connect to TCP gate at $endpoint")
+    end
+
+    # Eagerly ping to discover PUB stream endpoint and connect SUB socket
+    pong = ping(conn)
+    if pong !== nothing
+        pong_stream = string(get(pong, :stream_endpoint, ""))
+        if !isempty(pong_stream) && conn.sub_socket === nothing
+            conn.stream_endpoint = pong_stream
+            try
+                sub = Socket(mgr.zmq_context, SUB)
+                sub.rcvtimeo = 0
+                sub.linger = 0
+                sub.rcvhwm = 0
+                subscribe(sub, "")
+                ZMQ.connect(sub, pong_stream)
+                conn.sub_socket = sub
+                _push_log!(:info, "TCP stream connected: $pong_stream ($(conn.display_name))")
+            catch e
+                _push_log!(:warn, "TCP stream connect failed: $pong_stream — $(sprint(showerror, e))")
+            end
+        end
+        # Update metadata from pong
+        new_path = string(get(pong, :project_path, ""))
+        !isempty(new_path) && (conn.project_path = new_path)
+        conn.julia_version = string(get(pong, :julia_version, ""))
+        conn.pid = Int(get(pong, :pid, 0))
     end
 
     lock(mgr.lock) do
@@ -625,7 +735,7 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int; name::Str
     _fire_sessions_changed(mgr)
 
     # Write a local metadata file so reconnect works after TUI restart
-    Gate.write_metadata(sid, conn.name, endpoint, stream_endpoint; spawned_by = "user", mode = :tcp)
+    Gate.write_metadata(sid, conn.name, endpoint, conn.stream_endpoint; spawned_by = "user", mode = :tcp)
 
     return conn
 end
@@ -649,7 +759,7 @@ function _poll_tcp_gates!(mgr::ConnectionManager)
 
         # Try to connect (non-blocking attempt with short timeout)
         try
-            connect_tcp!(mgr, entry.host, entry.port; name = entry.name)
+            connect_tcp!(mgr, entry.host, entry.port; name = entry.name, token = entry.token)
             @debug "TCP gate connected" host = entry.host port = entry.port
         catch
             # Gate not reachable — will retry next poll
@@ -760,6 +870,10 @@ function _req_send_recv(conn::REPLConnection, request; caller_timeout::Float64 =
     end
 
     endpoint = conn.endpoint
+    # Inject auth token for TCP connections
+    if !isempty(conn.auth_token) && request isa NamedTuple
+        request = merge(request, (token = conn.auth_token,))
+    end
     io = IOBuffer()
     serialize(io, request)
     request_bytes = take!(io)
@@ -1292,38 +1406,38 @@ function start!(mgr::ConnectionManager)
 
     # Socket directory watcher — discovers new gate sessions
     mgr.watcher_task = Threads.@spawn begin
+        _discovery_failures = Dict{String,Int}()
         while mgr.running
             try
                 new_conns = discover_sessions(mgr)
-                added = false
-                for conn in new_conns
-                    if connect!(mgr, conn)
-                        lock(mgr.lock) do
-                            # If a stale connection for the same session_id exists
-                            # (process restarted before the TUI cleaned it up),
-                            # replace it in-place so we don't accumulate duplicates
-                            # and the display name slot is freed atomically.
-                            old_idx = findfirst(
-                                c -> c.session_id == conn.session_id,
-                                mgr.connections,
-                            )
-                            if old_idx !== nothing
-                                old_conn = mgr.connections[old_idx]
-                                _unregister_session_tools!(old_conn)
-                                disconnect!(old_conn)
-                                mgr.connections[old_idx] = conn
-                                @debug "Replaced restarted gate connection" display_name =
-                                    conn.display_name session_id = conn.session_id
-                            else
-                                push!(mgr.connections, conn)
+                if !isempty(new_conns)
+                    # Connect all discovered sessions in parallel
+                    connect_tasks = [(conn, Threads.@spawn connect!(mgr, conn)) for conn in new_conns]
+                    added = false
+                    for (conn, task) in connect_tasks
+                        ok = try; fetch(task); catch; false; end
+                        if ok
+                            lock(mgr.lock) do
+                                old_idx = findfirst(
+                                    c -> c.session_id == conn.session_id,
+                                    mgr.connections,
+                                )
+                                if old_idx !== nothing
+                                    old_conn = mgr.connections[old_idx]
+                                    _unregister_session_tools!(old_conn)
+                                    disconnect!(old_conn)
+                                    mgr.connections[old_idx] = conn
+                                else
+                                    push!(mgr.connections, conn)
+                                end
                             end
+                            added = true
+                        else
+                            _maybe_cleanup_stale_session!(mgr.sock_dir, conn.session_id)
                         end
-                        added = true
-                        @debug "Connected to gate" name = conn.name display_name =
-                            conn.display_name session_id = conn.session_id
                     end
+                    added && _fire_sessions_changed(mgr)
                 end
-                added && _fire_sessions_changed(mgr)
             catch e
                 @debug "Watcher error" exception = e
             end
@@ -1339,121 +1453,59 @@ function start!(mgr::ConnectionManager)
         end
     end
 
-    # Health checker — pings connected sessions, removes stale ones.
-    # IMPORTANT: We snapshot connections under the lock, then ping WITHOUT
-    # holding the lock so we don't block the TUI render loop or stream drain.
+    # Health checker — fire-and-forget pings with async result collection.
+    # Each cycle: collect any pong replies from previous pings, update status,
+    # then send new pings to sessions that need them. A stalled session never
+    # blocks health checks for others.
     mgr.health_task = Threads.@spawn begin
+        # Outstanding ping tasks keyed by session_id
+        pending_pings = Dict{String, Task}()
+
         while mgr.running
             try
-                # Snapshot current connections (cheap copy of references)
                 conns = lock(mgr.lock) do
                     copy(mgr.connections)
                 end
 
                 to_remove = REPLConnection[]
+
                 for conn in conns
+                    sid = conn.session_id
+
                     if conn.status in (:connected, :evaluating, :stalled)
-                        result = ping(conn)
-                        if result === :busy
-                            # Socket locked (eval in progress) — check PID (local sessions only)
-                            if !_is_tcp(conn) && !_is_pid_alive(conn.pid)
-                                @debug "Gate process dead (busy socket), removing session" name = conn.name pid = conn.pid
-                                disconnect!(conn)
-                                push!(to_remove, conn)
-                            elseif conn.status != :evaluating
-                                conn.status = :evaluating
-                                _fire_sessions_changed(mgr)
-                            end
-                        elseif result !== nothing
-                            # Successful pong — session is idle and responsive
-                            if conn.status != :connected
-                                conn.diagnostics = nothing
-                                conn.status = :connected
-                                _fire_sessions_changed(mgr)
-                            end
-                            # Update project_path from live pong data.
-                            # TCP sessions with a user-chosen name keep it;
-                            # those with default name ("tcp") derive from pong.
-                            new_path = get(result, :project_path, "")
-                            if !isempty(new_path) && new_path != conn.project_path
-                                conn.project_path = new_path
-                                if !_is_tcp(conn) || conn.name == "tcp"
-                                    existing = lock(mgr.lock) do
-                                        [c.display_name for c in mgr.connections if c !== conn]
-                                    end
-                                    conn.display_name = _derive_display_name(
-                                        new_path,
-                                        conn.julia_version,
-                                        existing;
-                                        namespace = conn.namespace,
-                                    )
-                                end
-                                _fire_sessions_changed(mgr)
-                            end
-
-                            # Sync session tools from pong data (hash-based change detection)
-                            pong_tools = get(result, :tools, nothing)
-                            pong_ns = string(get(result, :namespace, ""))
-                            if pong_tools isa Vector
-                                new_hash = hash(pong_tools)
-                                if new_hash != conn.tools_hash
-                                    _unregister_session_tools!(conn)
-                                    conn.session_tools = pong_tools
-                                    conn.tools_hash = new_hash
-                                    if !isempty(pong_ns)
-                                        old_ns = conn.namespace
-                                        conn.namespace = pong_ns
-                                        _resolve_namespace!(conn, mgr)
-                                        # Re-derive display name for extension sessions
-                                        # once namespace is known (replaces project basename)
-                                        if isempty(old_ns) && conn.spawned_by == "extension"
-                                            existing = lock(mgr.lock) do
-                                                [c.display_name for c in mgr.connections if c !== conn]
-                                            end
-                                            conn.display_name = _derive_display_name(
-                                                conn.project_path,
-                                                conn.julia_version,
-                                                existing;
-                                                namespace = pong_ns,
-                                            )
-                                        end
-                                    end
-                                    _register_session_tools!(conn)
-                                    _fire_sessions_changed(mgr)
-                                end
-                            end
-
-                            # Sync flags from pong
-                            conn.allow_restart = Bool(get(result, :allow_restart, true))
-                            conn.allow_mirror = Bool(get(result, :allow_mirror, true))
-                            conn.mirror_repl = Bool(get(result, :mirror_repl, false))
-                        else
-                            # Check if the gate process is still alive.
-                            # If it is, this is likely a GC pause or CPU stall —
-                            # mark as stalled so the user sees why it's unresponsive.
-                            # If the PID is gone, disconnect immediately.
-                            if _is_tcp(conn) || _is_pid_alive(conn.pid)
-                                @debug "Gate ping failed but process alive (GC pause?), marking stalled" name = conn.name pid = conn.pid
-                                if !_is_tcp(conn)
-                                    conn.diagnostics = _probe_process(conn.pid)
-                                end
-                                if conn.status != :stalled
-                                    conn.status = :stalled
-                                    _fire_sessions_changed(mgr)
-                                end
+                        # Collect result from previous ping if ready
+                        if haskey(pending_pings, sid)
+                            task = pending_pings[sid]
+                            if istaskdone(task)
+                                delete!(pending_pings, sid)
+                                result = try; fetch(task); catch; nothing; end
+                                _process_health_result!(mgr, conn, result, to_remove)
                             else
-                                @debug "Gate process dead, removing session" name = conn.name pid = conn.pid
-                                disconnect!(conn)
-                                push!(to_remove, conn)
+                                # Still waiting — check if it's been too long
+                                # (the task has its own timeout via _req_send_recv)
                             end
                         end
+
+                        # Send a new ping if we don't have one outstanding
+                        if !haskey(pending_pings, sid)
+                            pending_pings[sid] = Threads.@spawn ping(conn)
+                        end
+
                     elseif conn.status == :disconnected
-                        # TCP sessions have no socket file — always try to reconnect
+                        delete!(pending_pings, sid)
                         if isempty(conn.socket_path) || ispath(conn.socket_path)
                             connect!(mgr, conn)
                         else
                             push!(to_remove, conn)
                         end
+                    end
+                end
+
+                # Clean up pending pings for sessions that no longer exist
+                active_sids = Set(c.session_id for c in conns)
+                for sid in collect(keys(pending_pings))
+                    if sid ∉ active_sids
+                        delete!(pending_pings, sid)
                     end
                 end
 
@@ -1463,7 +1515,6 @@ function start!(mgr::ConnectionManager)
                         for conn in to_remove
                             idx = findfirst(c -> c === conn, mgr.connections)
                             if idx !== nothing
-                                # Unregister session tools before disconnect
                                 _unregister_session_tools!(conn)
                                 disconnect!(conn)
                                 _remove_session_files(mgr.sock_dir, conn.session_id)
@@ -1476,11 +1527,134 @@ function start!(mgr::ConnectionManager)
             catch e
                 @debug "Health check error" exception = e
             end
-            sleep(5)  # Health check every 5 seconds
+            sleep(5)
         end
     end
 
     return mgr
+end
+
+"""Process the result of a health check ping for one connection."""
+function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, result, to_remove::Vector{REPLConnection})
+    if result === :busy
+        if !_is_tcp(conn) && !_is_pid_alive(conn.pid)
+            disconnect!(conn)
+            push!(to_remove, conn)
+        elseif conn.status != :evaluating
+            conn.status = :evaluating
+            _fire_sessions_changed(mgr)
+        end
+    elseif result !== nothing
+        # Successful pong
+        if conn.status != :connected
+            conn.diagnostics = nothing
+            conn.status = :connected
+            _fire_sessions_changed(mgr)
+        end
+
+        # Update last_pong in metadata file for stale session detection
+        _update_session_metadata!(mgr.sock_dir, conn.session_id;
+            last_pong = Dates.format(now(), Dates.ISODateTimeFormat),
+            failed_pongs = 0)
+
+        # Notify TUI of successful pong
+        _emit_event!(mgr, :session_pong, (
+            session_id = conn.session_id,
+            display_name = conn.display_name,
+            pid = Int(get(result, :pid, 0)),
+            uptime = Float64(get(result, :uptime, 0.0)),
+            tools = length(get(result, :tools, [])),
+        ))
+
+        # Update project_path from pong
+        new_path = get(result, :project_path, "")
+        if !isempty(new_path) && new_path != conn.project_path
+            conn.project_path = new_path
+            if !_is_tcp(conn) || conn.name == "tcp"
+                existing = lock(mgr.lock) do
+                    [c.display_name for c in mgr.connections if c !== conn]
+                end
+                conn.display_name = _derive_display_name(
+                    new_path, conn.julia_version, existing;
+                    namespace = conn.namespace,
+                )
+            end
+            _fire_sessions_changed(mgr)
+        end
+
+        # Sync session tools from pong (hash-based change detection)
+        pong_tools = get(result, :tools, nothing)
+        pong_ns = string(get(result, :namespace, ""))
+        if pong_tools isa Vector
+            new_hash = hash(pong_tools)
+            if new_hash != conn.tools_hash
+                _unregister_session_tools!(conn)
+                conn.session_tools = pong_tools
+                conn.tools_hash = new_hash
+                if !isempty(pong_ns)
+                    old_ns = conn.namespace
+                    conn.namespace = pong_ns
+                    _resolve_namespace!(conn, mgr)
+                    if isempty(old_ns) && conn.spawned_by == "extension"
+                        existing = lock(mgr.lock) do
+                            [c.display_name for c in mgr.connections if c !== conn]
+                        end
+                        conn.display_name = _derive_display_name(
+                            conn.project_path, conn.julia_version, existing;
+                            namespace = pong_ns,
+                        )
+                    end
+                end
+                _register_session_tools!(conn)
+                _fire_sessions_changed(mgr)
+            end
+        end
+
+        # Sync flags
+        conn.allow_restart = Bool(get(result, :allow_restart, true))
+        conn.allow_mirror = Bool(get(result, :allow_mirror, true))
+        conn.mirror_repl = Bool(get(result, :mirror_repl, false))
+
+        # Connect SUB socket from pong stream_endpoint (TCP ephemeral port support)
+        pong_stream = string(get(result, :stream_endpoint, ""))
+        if !isempty(pong_stream) && conn.sub_socket === nothing
+            conn.stream_endpoint = pong_stream
+            try
+                sub = Socket(mgr.zmq_context, SUB)
+                sub.rcvtimeo = 0
+                sub.linger = 0
+                sub.rcvhwm = 0
+                subscribe(sub, "")
+                ZMQ.connect(sub, pong_stream)
+                conn.sub_socket = sub
+                _push_log!(:info, "TCP stream connected: $pong_stream ($(conn.display_name))")
+            catch e
+                _push_log!(:warn, "TCP stream connect failed: $pong_stream — $(sprint(showerror, e))")
+            end
+        end
+    else
+        # Ping failed — increment failed count in metadata
+        meta_path = joinpath(mgr.sock_dir, "$(conn.session_id).json")
+        prev_fails = 0
+        try
+            isfile(meta_path) && (prev_fails = get(JSON.parsefile(meta_path), "failed_pongs", 0))
+        catch; end
+        _update_session_metadata!(mgr.sock_dir, conn.session_id;
+            failed_pongs = prev_fails + 1,
+            last_failed_pong = Dates.format(now(), Dates.ISODateTimeFormat))
+        if _is_tcp(conn) || _is_pid_alive(conn.pid)
+            if !_is_tcp(conn)
+                conn.diagnostics = _probe_process(conn.pid)
+            end
+            if conn.status != :stalled
+                conn.status = :stalled
+                _fire_sessions_changed(mgr)
+            end
+        else
+            disconnect!(conn)
+            push!(to_remove, conn)
+        end
+    end
 end
 
 function stop!(mgr::ConnectionManager)

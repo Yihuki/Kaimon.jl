@@ -564,7 +564,7 @@ connect_tcp_tool = @mcp_tool(
     """Connect to a remote Julia gate session over TCP.
 
 Use this to connect to a gate started with `Gate.serve(mode=:tcp, port=9876)` on
-a remote (or local) machine. The PUB stream socket is assumed to be on port + 1.""",
+a remote (or local) machine. The PUB stream endpoint is resolved from the gate's handshake.""",
     Dict(
         "type" => "object",
         "properties" => Dict(
@@ -581,6 +581,10 @@ a remote (or local) machine. The PUB stream socket is assumed to be on port + 1.
                 "type" => "string",
                 "description" => "Optional display name for the session",
             ),
+            "token" => Dict(
+                "type" => "string",
+                "description" => "Auth token for the remote gate (falls back to KAIMON_GATE_TOKEN env var or security config)",
+            ),
         ),
         "required" => ["host"],
     ),
@@ -591,12 +595,13 @@ a remote (or local) machine. The PUB stream socket is assumed to be on port + 1.
         port = port isa Number ? Int(port) : tryparse(Int, string(port))
         port === nothing && return "Error: invalid port"
         name = get(args, "name", "")
+        token = get(args, "token", "")
 
         mgr = GATE_CONN_MGR[]
         mgr === nothing && return "Error: No ConnectionManager available"
 
         conn = try
-            connect_tcp!(mgr, host, port; name)
+            connect_tcp!(mgr, host, port; name, token)
         catch e
             return "Error: $(sprint(showerror, e))"
         end

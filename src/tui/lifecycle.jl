@@ -217,7 +217,7 @@ function Tachikoma.init!(m::KaimonModel, _t::Tachikoma.Terminal)
     if GATE_MODE[] && GATE_CONN_MGR[] !== nothing
         m.conn_mgr = GATE_CONN_MGR[]
     else
-        m.conn_mgr = ConnectionManager()
+        m.conn_mgr = ConnectionManager(task_queue = m._task_queue)
         start!(m.conn_mgr)
         register_sessions_changed_callback!(m.conn_mgr)
 

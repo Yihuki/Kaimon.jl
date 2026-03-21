@@ -69,6 +69,7 @@ const _GATE_TASK = Ref{Union{Task,Nothing}}(nothing)
 const _GATE_CONTEXT = Ref{Union{ZMQ.Context,Nothing}}(nothing)
 const _GATE_SOCKET = Ref{Union{ZMQ.Socket,Nothing}}(nothing)
 const _STREAM_SOCKET = Ref{Union{ZMQ.Socket,Nothing}}(nothing)  # PUB for streaming output
+const _STREAM_ENDPOINT = Ref{String}("")                       # resolved PUB endpoint
 const _SESSION_ID = Ref{String}("")
 const _RUNNING = Ref{Bool}(false)
 const _START_TIME = Ref{Float64}(0.0)
@@ -79,6 +80,10 @@ const _SESSION_NAMESPACE = Ref{String}("")
 const _ALLOW_RESTART = Ref{Bool}(true)
 const _ORIGINAL_ARGV = Ref{Vector{String}}(String[])
 const _MODE = Ref{Symbol}(:ipc)
+const _AUTH_TOKEN = Ref{String}("")  # non-empty = require token on TCP requests
+const _PING_COUNT = Ref{Int}(0)
+const _MSG_COUNT = Ref{Int}(0)       # total messages handled (pings + evals + tool calls + ...)
+const _LAST_PING_TIME = Ref{Float64}(0.0)
 const _GATE_TTY_PATH = Ref{Union{String,Nothing}}(nothing)
 const _GATE_TTY_SIZE =
     Ref{Union{Nothing,NamedTuple{(:rows, :cols),Tuple{Int,Int}}}}(nothing)
@@ -1492,7 +1497,16 @@ function _exec_restart(name::String, session_id::String, project_path::String)
 end
 
 function handle_message(request::NamedTuple)
+    # TCP auth: reject unauthenticated requests when a token is set
+    if _MODE[] == :tcp && !isempty(_AUTH_TOKEN[])
+        token = get(request, :token, "")
+        if token != _AUTH_TOKEN[]
+            return (type = :error, message = "Authentication required")
+        end
+    end
+
     msg_type = get(request, :type, :unknown)
+    _MSG_COUNT[] += 1
 
     if msg_type == :eval
         code = get(request, :code, "")
@@ -1545,6 +1559,8 @@ function handle_message(request::NamedTuple)
         isempty(path) && return (type = :error, message = "path required")
         return set_tty!(path)
     elseif msg_type == :ping
+        _PING_COUNT[] += 1
+        _LAST_PING_TIME[] = time()
         return (
             type = :pong,
             pid = getpid(),
@@ -1556,6 +1572,7 @@ function handle_message(request::NamedTuple)
             allow_restart = _ALLOW_RESTART[],
             allow_mirror = _ALLOW_MIRROR[],
             mirror_repl = _MIRROR_REPL[],
+            stream_endpoint = _STREAM_ENDPOINT[],
         )
     elseif msg_type == :tool_call
         tool_name = string(get(request, :name, ""))
@@ -1748,8 +1765,8 @@ to override the TTY check.
   `:tcp` (network-accessible, for remote debugging).
 - `host::String`: Bind address for TCP mode (default `"127.0.0.1"`, localhost only).
   Use `"0.0.0.0"` to accept connections from remote machines (no auth — use with care).
-- `port::Int`: Port for TCP mode (default `9876`). In TCP mode, the PUB socket
-  binds to `port + 1`.
+- `port::Int`: Port for TCP mode (default `0` = ephemeral, ZMQ picks a free port).
+  Both REP and PUB sockets support this. Use a fixed port for predictable endpoints.
 
 # Example
 ```julia
@@ -1762,6 +1779,12 @@ Gate.serve(tools=[GateTool("send_key", my_key_handler)])
 # TCP mode for remote debugging (e.g. from a model server)
 Gate.serve(mode=:tcp, port=9876, force=true)
 ```
+
+# Environment variables
+These override the keyword defaults when set:
+- `KAIMON_GATE_MODE`: `"ipc"` or `"tcp"` (default: `"ipc"`)
+- `KAIMON_GATE_HOST`: Bind address for TCP (default: `"127.0.0.1"`)
+- `KAIMON_GATE_PORT`: Port for TCP (default: `"0"` = ephemeral)
 """
 function serve(;
     session_id::Union{String,Nothing} = nothing,
@@ -1773,9 +1796,9 @@ function serve(;
     spawned_by::String = "user",
     on_shutdown::Any = nothing,
     infiltrator::Bool = true,
-    mode::Symbol = :ipc,
-    host::String = "127.0.0.1",
-    port::Int = 9876,
+    mode::Symbol = Symbol(get(ENV, "KAIMON_GATE_MODE", "ipc")),
+    host::String = get(ENV, "KAIMON_GATE_HOST", "127.0.0.1"),
+    port::Int = parse(Int, get(ENV, "KAIMON_GATE_PORT", "0")),
 )
     mode in (:ipc, :tcp) || throw(ArgumentError("mode must be :ipc or :tcp, got :$mode"))
     _serve(;
@@ -1906,21 +1929,39 @@ function _serve(;
     _GATE_SOCKET[] = socket
     _MODE[] = mode
 
+    # Set auth token for TCP mode.
+    # Priority: KAIMON_GATE_TOKEN env var > security config API key > none.
+    # Lax mode and missing config = no auth required.
+    if mode == :tcp
+        env_token = get(ENV, "KAIMON_GATE_TOKEN", "")
+        if !isempty(env_token)
+            _AUTH_TOKEN[] = env_token
+        else
+            try
+                config = load_global_config()
+                if config.mode != :lax && !isempty(config.api_keys)
+                    _AUTH_TOKEN[] = first(config.api_keys)
+                end
+            catch
+                # No config — no auth (same as lax)
+            end
+        end
+    end
+
     # 1s receive timeout so message loop can check _RUNNING periodically.
     # linger=0: close() returns immediately without blocking to drain.
     socket.rcvtimeo = 1000
     socket.linger = 0
 
     # Bind endpoint — IPC (local socket file) or TCP (network port)
+    # TCP mode supports port=0 for ephemeral port assignment (ZMQ picks a free port).
     if mode == :tcp
-        endpoint = "tcp://$(host):$(port)"
-        bind(socket, endpoint)
-        stream_endpoint = "tcp://$(host):$(port + 1)"
+        bind(socket, "tcp://$(host):$(port)")
+        endpoint = rstrip(ZMQ._get_last_endpoint(socket), '\0')
     else
         sock_path = joinpath(SOCK_DIR, "$(sid).sock")
         endpoint = "ipc://$(sock_path)"
         bind(socket, endpoint)
-        stream_endpoint = "ipc://$(joinpath(SOCK_DIR, "$(sid)-stream.sock"))"
     end
 
     # Create PUB socket for streaming stdout/stderr to TUI.
@@ -1929,8 +1970,15 @@ function _serve(;
     pub_socket = Socket(ctx, PUB)
     pub_socket.sndhwm = 0
     pub_socket.linger = 0
-    bind(pub_socket, stream_endpoint)
+    if mode == :tcp
+        bind(pub_socket, "tcp://$(host):0")
+        stream_endpoint = rstrip(ZMQ._get_last_endpoint(pub_socket), '\0')
+    else
+        stream_endpoint = "ipc://$(joinpath(SOCK_DIR, "$(sid)-stream.sock"))"
+        bind(pub_socket, stream_endpoint)
+    end
     _STREAM_SOCKET[] = pub_socket
+    _STREAM_ENDPOINT[] = stream_endpoint
 
     # Write metadata file for session discovery (IPC only — TCP sessions
     # are connected manually via connect_tcp! and don't use file-based discovery)
@@ -2034,6 +2082,13 @@ function _serve(;
         printstyled("  TCP mode: "; color = :light_black)
         printstyled("$endpoint"; color = :cyan)
         printstyled(" (PUB: $stream_endpoint)\n"; color = :light_black)
+        if !isempty(_AUTH_TOKEN[])
+            printstyled("  Auth token: "; color = :light_black)
+            printstyled("$(_AUTH_TOKEN[])\n"; color = :yellow)
+        else
+            printstyled("  Auth: "; color = :light_black)
+            printstyled("none (lax mode)\n"; color = :yellow)
+        end
     end
     if _MIRROR_REPL[]
         printstyled("  host REPL mirroring enabled\n"; color = :light_black)
@@ -2102,6 +2157,11 @@ function _cleanup()
     end
     _GATE_SOCKET[] = nothing
     _STREAM_SOCKET[] = nothing
+    _STREAM_ENDPOINT[] = ""
+    _AUTH_TOKEN[] = ""
+    _PING_COUNT[] = 0
+    _MSG_COUNT[] = 0
+    _LAST_PING_TIME[] = 0.0
     _SERVICE_SOCKET[] = nothing
     _GATE_CONTEXT[] = nothing
 
@@ -2130,11 +2190,23 @@ function status()
     if _RUNNING[]
         uptime = time() - _START_TIME[]
         mins = round(Int, uptime / 60)
+        sock = _GATE_SOCKET[]
+        rep_ep = sock !== nothing ? rstrip(ZMQ._get_last_endpoint(sock), '\0') : "unknown"
         println("Gate: running")
-        println("  Session: $(_SESSION_ID[])")
-        println("  Uptime:  $(mins)m")
-        println("  PID:     $(getpid())")
-        println("  Mirror:  $(_MIRROR_REPL[])")
+        println("  Session:   $(_SESSION_ID[])")
+        println("  Namespace: $(_SESSION_NAMESPACE[])")
+        println("  Uptime:    $(mins)m")
+        println("  PID:       $(getpid())")
+        println("  REP:       $rep_ep")
+        println("  PUB:       $(_STREAM_ENDPOINT[])")
+        println("  Mirror:    $(_MIRROR_REPL[])")
+        println("  Tools:     $(length(_SESSION_TOOLS[]))")
+        println("  Pings:     $(_PING_COUNT[])$(  _LAST_PING_TIME[] > 0 ? " (last $(round(Int, time() - _LAST_PING_TIME[]))s ago)" : "")")
+        println("  Messages:  $(_MSG_COUNT[])")
+        if _MODE[] == :tcp
+            auth = isempty(_AUTH_TOKEN[]) ? "none (lax)" : "token"
+            println("  Auth:      $auth")
+        end
     else
         println("Gate: not running")
     end

@@ -655,8 +655,8 @@ function _render_result_modal(
 end
 
 function _render_tcp_gate_add_modal(m::KaimonModel, buf::Buffer, area::Rect)
-    w = min(46, area.width - 4)
-    h = 8
+    w = min(50, area.width - 4)
+    h = 9
     rect = center(area, w, h)
 
     border_s = tstyle(:accent, bold = true)
@@ -677,35 +677,29 @@ function _render_tcp_gate_add_modal(m::KaimonModel, buf::Buffer, area::Rect)
     x = inner.x + 1
     label_w = 12
 
-    # Field 1: Host:Port
-    f1_active = m._tcp_gate_field == 1
-    set_string!(buf, x, y, rpad("Host:Port", label_w), f1_active ? tstyle(:accent) : tstyle(:text_dim))
-    if m.tcp_gate_input !== nothing
-        m.tcp_gate_input.tick = m.tick
-        input_area = Rect(x + label_w, y, inner.width - label_w - 2, 1)
-        if f1_active
-            render(m.tcp_gate_input, input_area, buf)
-        else
-            set_string!(buf, x + label_w, y, Tachikoma.text(m.tcp_gate_input), tstyle(:text))
+    # Helper to render a text input field row
+    function _field!(field_idx, label, input)
+        y > bottom(inner) && return
+        active = m._tcp_gate_field == field_idx
+        set_string!(buf, x, y, rpad(label, label_w), active ? tstyle(:accent) : tstyle(:text_dim))
+        if input !== nothing
+            input.tick = m.tick
+            input_area = Rect(x + label_w, y, inner.width - label_w - 2, 1)
+            if active
+                render(input, input_area, buf)
+            else
+                set_string!(buf, x + label_w, y, Tachikoma.text(input), tstyle(:text))
+            end
         end
+        y += 1
     end
+
+    _field!(1, "Host:Port", m.tcp_gate_input)
+    _field!(2, "Name", m.tcp_gate_name_input)
+    _field!(3, "Token", m.tcp_gate_token_input)
     y += 1
 
-    # Field 2: Name
-    f2_active = m._tcp_gate_field == 2
-    set_string!(buf, x, y, rpad("Name", label_w), f2_active ? tstyle(:accent) : tstyle(:text_dim))
-    if m.tcp_gate_name_input !== nothing
-        m.tcp_gate_name_input.tick = m.tick
-        input_area = Rect(x + label_w, y, inner.width - label_w - 2, 1)
-        if f2_active
-            render(m.tcp_gate_name_input, input_area, buf)
-        else
-            set_string!(buf, x + label_w, y, Tachikoma.text(m.tcp_gate_name_input), tstyle(:text))
-        end
-    end
-    y += 2
-
     if y <= bottom(inner)
-        set_string!(buf, x, y, "[Tab] switch field  [Enter] add  [Esc] cancel", tstyle(:text_dim))
+        set_string!(buf, x, y, "[Tab] switch  [Enter] add  [Esc] cancel", tstyle(:text_dim))
     end
 end

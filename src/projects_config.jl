@@ -280,6 +280,7 @@ struct TCPGateEntry
     port::Int
     name::String      # display name
     enabled::Bool
+    token::String     # auth token (empty = use env/config fallback)
 end
 
 function get_tcp_gates_config_path()
@@ -298,6 +299,7 @@ function load_tcp_gates_config()::Vector{TCPGateEntry}
                 Int(get(g, "port", 9876)),
                 String(get(g, "name", "")),
                 Bool(get(g, "enabled", true)),
+                String(get(g, "token", "")),
             ) for g in gates
         ]
     catch e
@@ -316,6 +318,7 @@ function save_tcp_gates_config(entries::Vector{TCPGateEntry})
                 "port" => e.port,
                 "name" => e.name,
                 "enabled" => e.enabled,
+                "token" => e.token,
             ) for e in entries
         ],
     )

@@ -107,7 +107,7 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
             ("Tool calls", string(conn.tool_call_count)),
             ("Mirroring", mirror_str),
             ("Restart", restart_str),
-            ("Session", conn.session_id[1:min(8, length(conn.session_id))] * "..."),
+            ("Session", startswith(conn.session_id, "tcp-") ? conn.session_id : conn.session_id[1:min(8, length(conn.session_id))] * "..."),
         ])
 
         for (label, value) in fields
@@ -511,19 +511,8 @@ function _advance_ecg!(m::KaimonModel)
         end
     end
 
-    # Heartbeat from gate health-check pings — per connection
-    if m.conn_mgr !== nothing
-        lock(m.conn_mgr.lock) do
-            for c in m.conn_mgr.connections
-                key = c.session_id[1:min(8, length(c.session_id))]
-                ecg = _get_ecg!(m, key)
-                if c.last_ping > ecg.last_ping
-                    ecg.last_ping = c.last_ping
-                    ecg.pending_blips += 1
-                end
-            end
-        end
-    end
+    # Heartbeat blips are now pushed via :session_pong TaskEvents
+    # from the health check loop — no polling needed here.
 
     # Advance all active ECG traces
     for ecg in values(m.ecg_states)

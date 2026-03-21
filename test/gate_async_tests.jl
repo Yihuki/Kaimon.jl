@@ -204,3 +204,146 @@ end
         end
     end
 end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TCP auth unit tests — validate handle_message token checking
+# ─────────────────────────────────────────────────────────────────────────────
+
+@testset "Gate TCP auth" begin
+    orig_mode = Kaimon.Gate._MODE[]
+    orig_token = Kaimon.Gate._AUTH_TOKEN[]
+
+    @testset "IPC mode skips auth" begin
+        Kaimon.Gate._MODE[] = :ipc
+        Kaimon.Gate._AUTH_TOKEN[] = "secret123"
+        resp = Kaimon.Gate.handle_message((type = :ping,))
+        @test resp.type == :pong
+    end
+
+    @testset "TCP mode with empty token skips auth" begin
+        Kaimon.Gate._MODE[] = :tcp
+        Kaimon.Gate._AUTH_TOKEN[] = ""
+        resp = Kaimon.Gate.handle_message((type = :ping,))
+        @test resp.type == :pong
+    end
+
+    @testset "TCP mode rejects missing token" begin
+        Kaimon.Gate._MODE[] = :tcp
+        Kaimon.Gate._AUTH_TOKEN[] = "secret123"
+        resp = Kaimon.Gate.handle_message((type = :ping,))
+        @test resp.type == :error
+        @test occursin("Authentication", resp.message)
+    end
+
+    @testset "TCP mode rejects wrong token" begin
+        Kaimon.Gate._MODE[] = :tcp
+        Kaimon.Gate._AUTH_TOKEN[] = "secret123"
+        resp = Kaimon.Gate.handle_message((type = :ping, token = "wrong"))
+        @test resp.type == :error
+        @test occursin("Authentication", resp.message)
+    end
+
+    @testset "TCP mode accepts correct token" begin
+        Kaimon.Gate._MODE[] = :tcp
+        Kaimon.Gate._AUTH_TOKEN[] = "secret123"
+        resp = Kaimon.Gate.handle_message((type = :ping, token = "secret123"))
+        @test resp.type == :pong
+    end
+
+    @testset "pong includes stream_endpoint" begin
+        Kaimon.Gate._MODE[] = :ipc
+        Kaimon.Gate._AUTH_TOKEN[] = ""
+        Kaimon.Gate._STREAM_ENDPOINT[] = "ipc:///tmp/test-stream.sock"
+        resp = Kaimon.Gate.handle_message((type = :ping,))
+        @test resp.type == :pong
+        @test resp.stream_endpoint == "ipc:///tmp/test-stream.sock"
+        Kaimon.Gate._STREAM_ENDPOINT[] = ""
+    end
+
+    Kaimon.Gate._MODE[] = orig_mode
+    Kaimon.Gate._AUTH_TOKEN[] = orig_token
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TCP gate integration test — ephemeral port + auth round-trip
+# ─────────────────────────────────────────────────────────────────────────────
+
+@testset "Gate TCP ephemeral port + auth" begin
+    if Kaimon.Gate._RUNNING[]
+        @info "Skipping TCP test — gate already running"
+        @test_skip false
+        return
+    end
+
+    token = "test_token_$(bytes2hex(rand(UInt8, 8)))"
+    session_id = "test-tcp-$(bytes2hex(rand(UInt8, 4)))"
+
+    Kaimon.Gate._AUTH_TOKEN[] = token
+    Kaimon.Gate._serve(
+        name = "test-tcp",
+        session_id = session_id,
+        force = true,
+        mode = :tcp,
+        host = "127.0.0.1",
+        port = 0,
+    )
+    sleep(0.2)
+
+    @test Kaimon.Gate._RUNNING[]
+    @test Kaimon.Gate._MODE[] == :tcp
+
+    sock = Kaimon.Gate._GATE_SOCKET[]
+    @test sock !== nothing
+    rep_endpoint = rstrip(ZMQ._get_last_endpoint(sock), '\0')
+    @test startswith(rep_endpoint, "tcp://")
+
+    @test !isempty(Kaimon.Gate._STREAM_ENDPOINT[])
+    @test startswith(Kaimon.Gate._STREAM_ENDPOINT[], "tcp://")
+
+    ctx = Context()
+    req = Socket(ctx, REQ)
+    req.rcvtimeo = 3000
+    req.linger = 0
+    ZMQ.connect(req, rep_endpoint)
+
+    try
+        # Ping without token → rejected
+        io = IOBuffer()
+        serialize(io, (type = :ping,))
+        send(req, Message(take!(io)))
+        resp = deserialize(IOBuffer(recv(req)))
+        @test resp.type == :error
+
+        # Fresh REQ socket (REQ/REP state machine requires it)
+        close(req)
+        req = Socket(ctx, REQ)
+        req.rcvtimeo = 3000
+        req.linger = 0
+        ZMQ.connect(req, rep_endpoint)
+
+        # Ping with correct token → pong with stream_endpoint
+        io = IOBuffer()
+        serialize(io, (type = :ping, token = token))
+        send(req, Message(take!(io)))
+        resp = deserialize(IOBuffer(recv(req)))
+        @test resp.type == :pong
+        @test haskey(resp, :stream_endpoint)
+        @test startswith(resp.stream_endpoint, "tcp://")
+
+        # stream_endpoint from pong is connectable
+        sub = Socket(ctx, SUB)
+        sub.linger = 0
+        sub.rcvtimeo = 100
+        ZMQ.subscribe(sub, "")
+        ZMQ.connect(sub, resp.stream_endpoint)
+        close(sub)
+    finally
+        close(req)
+        close(ctx)
+        Kaimon.Gate.stop()
+        sleep(0.1)
+    end
+
+    @test !Kaimon.Gate._RUNNING[]
+    @test isempty(Kaimon.Gate._AUTH_TOKEN[])
+end
