@@ -1795,7 +1795,7 @@ These override the keyword defaults when set:
 """
 function serve(;
     session_id::Union{String,Nothing} = nothing,
-    force::Bool = false,
+    force::Union{Bool,Nothing} = nothing,
     tools::Vector{GateTool} = GateTool[],
     namespace::String = "",
     allow_mirror::Bool = true,
@@ -1803,12 +1803,48 @@ function serve(;
     spawned_by::String = "user",
     on_shutdown::Any = nothing,
     infiltrator::Bool = true,
-    mode::Symbol = Symbol(get(ENV, "KAIMON_GATE_MODE",
-        haskey(ENV, "KAIMON_GATE_PORT") || haskey(ENV, "KAIMON_GATE_STREAM_PORT") ? "tcp" : "ipc")),
-    host::String = get(ENV, "KAIMON_GATE_HOST", "127.0.0.1"),
-    port::Int = parse(Int, get(ENV, "KAIMON_GATE_PORT", "0")),
-    stream_port::Int = parse(Int, get(ENV, "KAIMON_GATE_STREAM_PORT", "0")),
+    mode::Union{Symbol,Nothing} = nothing,
+    host::Union{String,Nothing} = nothing,
+    port::Union{Int,Nothing} = nothing,
+    stream_port::Union{Int,Nothing} = nothing,
 )
+    # Resolve defaults: explicit kwargs > env vars > kaimon.toml [gate] > defaults
+    toml = _load_gate_config()
+
+    if mode === nothing
+        env_mode = get(ENV, "KAIMON_GATE_MODE", "")
+        has_env_port = haskey(ENV, "KAIMON_GATE_PORT") || haskey(ENV, "KAIMON_GATE_STREAM_PORT")
+        toml_mode = get(toml, "mode", "")
+        has_toml_port = haskey(toml, "port") || haskey(toml, "stream_port")
+        mode = if !isempty(env_mode)
+            Symbol(env_mode)
+        elseif has_env_port
+            :tcp
+        elseif toml_mode == "tcp" || has_toml_port
+            :tcp
+        else
+            :ipc
+        end
+    end
+    if host === nothing
+        env_host = get(ENV, "KAIMON_GATE_HOST", "")
+        host = !isempty(env_host) ? env_host :
+            get(toml, "host", "127.0.0.1")
+    end
+    if port === nothing
+        env_port = get(ENV, "KAIMON_GATE_PORT", "")
+        port = !isempty(env_port) ? parse(Int, env_port) :
+            Int(get(toml, "port", 0))
+    end
+    if stream_port === nothing
+        env_sp = get(ENV, "KAIMON_GATE_STREAM_PORT", "")
+        stream_port = !isempty(env_sp) ? parse(Int, env_sp) :
+            Int(get(toml, "stream_port", 0))
+    end
+    if force === nothing
+        force = Bool(get(toml, "force", false))
+    end
+
     mode in (:ipc, :tcp) || throw(ArgumentError("mode must be :ipc or :tcp, got :$mode"))
     _serve(;
         name = basename(dirname(something(Base.active_project(), "julia"))),
