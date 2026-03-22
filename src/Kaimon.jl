@@ -520,7 +520,14 @@ function _serialize_expr(expr)
         parts = String[]
         for arg in expr.args
             arg isa LineNumberNode && continue
-            push!(parts, sprint(Base.show_unquoted, arg, 0, 0))
+            # Recursively handle nested :toplevel exprs (produced by
+            # Base.parse_input_line for multi-statement code)
+            if arg isa Expr && arg.head == :toplevel
+                s = _serialize_expr(arg)
+                !isempty(s) && push!(parts, s)
+            else
+                push!(parts, sprint(Base.show_unquoted, arg, 0, 0))
+            end
         end
         return join(parts, "\n")
     else
