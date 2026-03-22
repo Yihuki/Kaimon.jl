@@ -12,6 +12,7 @@ using ZMQ
 using REPL
 using Serialization
 using Dates
+using TOML
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -2406,11 +2407,17 @@ function _load_gate_config()
     project = Base.active_project()
     project === nothing && return Dict{String,Any}()
     toml_path = joinpath(dirname(project), "kaimon.toml")
-    isfile(toml_path) || return Dict{String,Any}()
+    if !isfile(toml_path)
+        @debug "kaimon.toml not found" toml_path
+        return Dict{String,Any}()
+    end
     try
         data = TOML.parsefile(toml_path)
-        return get(data, "gate", Dict{String,Any}())
-    catch
+        gate = get(data, "gate", Dict{String,Any}())
+        !isempty(gate) && @debug "Loaded kaimon.toml [gate]" gate
+        return gate
+    catch e
+        @warn "Failed to parse kaimon.toml" toml_path exception=e
         return Dict{String,Any}()
     end
 end
