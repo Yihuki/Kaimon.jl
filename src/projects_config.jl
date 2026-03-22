@@ -281,6 +281,7 @@ struct TCPGateEntry
     name::String      # display name
     enabled::Bool
     token::String     # auth token (empty = use env/config fallback)
+    stream_port::Int  # PUB socket port override for tunneling (0 = discover from pong)
 end
 
 function get_tcp_gates_config_path()
@@ -300,6 +301,7 @@ function load_tcp_gates_config()::Vector{TCPGateEntry}
                 String(get(g, "name", "")),
                 Bool(get(g, "enabled", true)),
                 String(get(g, "token", "")),
+                Int(get(g, "stream_port", 0)),
             ) for g in gates
         ]
     catch e
@@ -319,6 +321,7 @@ function save_tcp_gates_config(entries::Vector{TCPGateEntry})
                 "name" => e.name,
                 "enabled" => e.enabled,
                 "token" => e.token,
+                "stream_port" => e.stream_port,
             ) for e in entries
         ],
     )

@@ -581,13 +581,19 @@ function discover_sessions(mgr::ConnectionManager)
         # Skip if we already track this session with the exact same PID —
         # nothing changed.  If the PID is different the process restarted:
         # don't skip so the watcher can replace the stale connection.
-        if haskey(known_id_pids, session_id) && known_id_pids[session_id] == pid
+        # For TCP sessions, always skip if already tracked (any status) —
+        # the PID may differ between metadata file and pong, and replacing
+        # would lose the SUB socket established by connect_tcp!.
+        session_mode = Symbol(get(meta, "mode", "ipc"))
+        if session_mode == :tcp && haskey(known_id_pids, session_id)
+            continue
+        end
+        if session_mode != :tcp && haskey(known_id_pids, session_id) && known_id_pids[session_id] == pid
             continue
         end
 
         # Skip and clean up sessions whose PID is no longer alive.
         # TCP sessions may run on remote machines — skip PID liveness check.
-        session_mode = Symbol(get(meta, "mode", "ipc"))
         if session_mode != :tcp && !_is_pid_alive(pid)
             _remove_session_files(mgr.sock_dir, session_id)
             continue
@@ -659,9 +665,9 @@ resolved from the gate's pong response (supports ephemeral ports).
 Returns the connected `REPLConnection`, or throws on failure.
 """
 function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
-                      name::String = "", token::String = "")
+                      name::String = "", token::String = "", stream_port::Int = 0)
     endpoint = "tcp://$(host):$(port)"
-    stream_endpoint = ""  # resolved from pong handshake
+    stream_endpoint = stream_port > 0 ? "tcp://$(host):$(stream_port)" : ""
     sid = "tcp-$(host)-$(port)"
 
     # Check for existing connection to this endpoint
@@ -712,11 +718,16 @@ function connect_tcp!(mgr::ConnectionManager, host::String, port::Int;
     end
 
     # Populate connection from pong
-    pong_stream = string(get(pong, :stream_endpoint, ""))
+    # Prefer pre-set stream_endpoint (from stream_port config) over pong value
+    pong_stream = !isempty(conn.stream_endpoint) ? conn.stream_endpoint :
+        string(get(pong, :stream_endpoint, ""))
     if !isempty(pong_stream)
         conn.stream_endpoint = pong_stream
         try
-            sub = Socket(mgr.zmq_context, SUB)
+            # Use a dedicated context for TCP SUB sockets — shared contexts
+            # can have I/O thread contention with many REQ sockets.
+            sub_ctx = Context()
+            sub = Socket(sub_ctx, SUB)
             sub.rcvtimeo = 0
             sub.linger = 0
             sub.rcvhwm = 0
@@ -765,8 +776,18 @@ function _poll_tcp_gates!(mgr::ConnectionManager)
             any(c -> c.session_id == sid && c.status in (:connected, :evaluating, :stalled, :connecting), mgr.connections)
         end
         if already
-            # Reset backoff on active connection
+            # Reset backoff and sync display name from config
             delete!(_TCP_POLL_BACKOFF, backoff_key)
+            if !isempty(entry.name)
+                lock(mgr.lock) do
+                    for c in mgr.connections
+                        if c.session_id == sid && c.display_name != entry.name
+                            c.display_name = entry.name
+                            _fire_sessions_changed(mgr)
+                        end
+                    end
+                end
+            end
             continue
         end
 
@@ -778,7 +799,7 @@ function _poll_tcp_gates!(mgr::ConnectionManager)
 
         # Try to connect
         try
-            connect_tcp!(mgr, entry.host, entry.port; name = entry.name, token = entry.token)
+            connect_tcp!(mgr, entry.host, entry.port; name = entry.name, token = entry.token, stream_port = entry.stream_port)
             delete!(_TCP_POLL_BACKOFF, backoff_key)
             _push_log!(:info, "TCP gate connected: $(entry.name) ($(entry.host):$(entry.port))")
         catch
@@ -1576,10 +1597,14 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
             _fire_sessions_changed(mgr)
         end
 
-        # Update last_pong in metadata file for stale session detection
+        # Update metadata file with fresh pong data
         _update_session_metadata!(mgr.sock_dir, conn.session_id;
             last_pong = Dates.format(now(), Dates.ISODateTimeFormat),
-            failed_pongs = 0)
+            failed_pongs = 0,
+            project_path = conn.project_path,
+            pid = conn.pid,
+            name = conn.display_name,
+            julia_version = conn.julia_version)
 
         # Notify TUI of successful pong
         _emit_event!(mgr, :session_pong, (
@@ -1644,7 +1669,8 @@ function _process_health_result!(mgr::ConnectionManager, conn::REPLConnection, r
         if !isempty(pong_stream) && conn.sub_socket === nothing
             conn.stream_endpoint = pong_stream
             try
-                sub = Socket(mgr.zmq_context, SUB)
+                sub_ctx = Context()
+                sub = Socket(sub_ctx, SUB)
                 sub.rcvtimeo = 0
                 sub.linger = 0
                 sub.rcvhwm = 0

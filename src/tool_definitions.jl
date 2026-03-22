@@ -585,6 +585,10 @@ a remote (or local) machine. The PUB stream endpoint is resolved from the gate's
                 "type" => "string",
                 "description" => "Auth token for the remote gate (falls back to KAIMON_GATE_TOKEN env var or security config)",
             ),
+            "stream_port" => Dict(
+                "type" => "integer",
+                "description" => "Local port for the PUB stream socket (for SSH tunnels where the PUB port differs locally). 0 = auto-discover from pong.",
+            ),
         ),
         "required" => ["host"],
     ),
@@ -596,12 +600,13 @@ a remote (or local) machine. The PUB stream endpoint is resolved from the gate's
         port === nothing && return "Error: invalid port"
         name = get(args, "name", "")
         token = get(args, "token", "")
+        stream_port = Int(get(args, "stream_port", 0))
 
         mgr = GATE_CONN_MGR[]
         mgr === nothing && return "Error: No ConnectionManager available"
 
         conn = try
-            connect_tcp!(mgr, host, port; name, token)
+            connect_tcp!(mgr, host, port; name, token, stream_port)
         catch e
             return "Error: $(sprint(showerror, e))"
         end

@@ -45,6 +45,7 @@ function begin_tcp_gate_add!(m::KaimonModel)
     m.tcp_gate_input = TextInput(text = "127.0.0.1:9876", label = "Host:Port: ", tick = m.tick)
     m.tcp_gate_name_input = TextInput(text = "", label = "Name: ", tick = m.tick)
     m.tcp_gate_token_input = TextInput(text = "", label = "Token: ", tick = m.tick)
+    m.tcp_gate_stream_port_input = TextInput(text = "", label = "Stream: ", tick = m.tick)
     m._tcp_gate_field = 1
     m.config_flow = FLOW_TCP_GATE_ADD
 end
@@ -75,7 +76,9 @@ function _execute_tcp_gate_add!(m::KaimonModel)
     end
 
     token = strip(Tachikoma.text(m.tcp_gate_token_input))
-    entry = TCPGateEntry(host, port, isempty(name) ? "$host:$port" : name, true, token)
+    sp_str = strip(Tachikoma.text(m.tcp_gate_stream_port_input))
+    stream_port = isempty(sp_str) ? 0 : something(tryparse(Int, sp_str), 0)
+    entry = TCPGateEntry(host, port, isempty(name) ? "$host:$port" : name, true, token, stream_port)
     push!(m.tcp_gate_entries, entry)
     save_tcp_gates_config(m.tcp_gate_entries)
     m.flow_message = "Added TCP gate: $(entry.name) ($host:$port)"
@@ -201,9 +204,8 @@ function handle_flow_input!(m::KaimonModel, evt::KeyEvent)
         m.config_flow = FLOW_IDLE
 
     elseif flow == FLOW_TCP_GATE_ADD
-        # Three fields: host:port, name, token
         field = m._tcp_gate_field
-        n_fields = 3
+        n_fields = 4
         if evt.key == :tab
             m._tcp_gate_field = mod1(field + 1, n_fields)
         elseif evt.key == :backtab
@@ -213,7 +215,7 @@ function handle_flow_input!(m::KaimonModel, evt::KeyEvent)
         elseif evt.key == :enter
             m._tcp_gate_field = mod1(field + 1, n_fields)
         else
-            input = (m.tcp_gate_input, m.tcp_gate_name_input, m.tcp_gate_token_input)[field]
+            input = (m.tcp_gate_input, m.tcp_gate_name_input, m.tcp_gate_token_input, m.tcp_gate_stream_port_input)[field]
             input !== nothing && handle_key!(input, evt)
         end
     elseif flow == FLOW_TCP_GATE_ADD_RESULT

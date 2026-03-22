@@ -669,7 +669,7 @@ end
 
 function _render_tcp_gate_add_modal(m::KaimonModel, buf::Buffer, area::Rect)
     w = min(50, area.width - 4)
-    h = 9
+    h = 10
     rect = center(area, w, h)
 
     border_s = tstyle(:accent, bold = true)
@@ -710,6 +710,7 @@ function _render_tcp_gate_add_modal(m::KaimonModel, buf::Buffer, area::Rect)
     _field!(1, "Host:Port", m.tcp_gate_input)
     _field!(2, "Name", m.tcp_gate_name_input)
     _field!(3, "Token", m.tcp_gate_token_input)
+    _field!(4, "Stream port", m.tcp_gate_stream_port_input)
     y += 1
 
     if y <= bottom(inner)

@@ -881,7 +881,12 @@ function gate_eval(code::String; _mod::Module = Main, display_code::String = cod
 
         expr = Base.parse_input_line(code)
 
-        if has_repl
+        # Use call_on_backend only from the message loop (synchronous :eval
+        # on the interactive thread). Async evals run on default-pool threads
+        # via Threads.@spawn — call_on_backend would deadlock because the
+        # REPL backend is occupied by the user's interactive session.
+        on_interactive = Threads.threadpool(Threads.threadid()) === :interactive
+        if has_repl && on_interactive
             result = REPL.call_on_backend(() -> _eval_with_capture(expr), backend)
             # call_on_backend returns (value, iserr) Pair or NamedTuple
             val = if result isa Pair
@@ -1785,6 +1790,8 @@ These override the keyword defaults when set:
 - `KAIMON_GATE_MODE`: `"ipc"` or `"tcp"` (default: `"ipc"`)
 - `KAIMON_GATE_HOST`: Bind address for TCP (default: `"127.0.0.1"`)
 - `KAIMON_GATE_PORT`: Port for TCP (default: `"0"` = ephemeral)
+- `KAIMON_GATE_STREAM_PORT`: PUB stream port for TCP (default: `"0"` = ephemeral).
+  Use a fixed port when tunneling so the client can connect to a known port.
 """
 function serve(;
     session_id::Union{String,Nothing} = nothing,
@@ -1796,9 +1803,11 @@ function serve(;
     spawned_by::String = "user",
     on_shutdown::Any = nothing,
     infiltrator::Bool = true,
-    mode::Symbol = Symbol(get(ENV, "KAIMON_GATE_MODE", "ipc")),
+    mode::Symbol = Symbol(get(ENV, "KAIMON_GATE_MODE",
+        haskey(ENV, "KAIMON_GATE_PORT") || haskey(ENV, "KAIMON_GATE_STREAM_PORT") ? "tcp" : "ipc")),
     host::String = get(ENV, "KAIMON_GATE_HOST", "127.0.0.1"),
     port::Int = parse(Int, get(ENV, "KAIMON_GATE_PORT", "0")),
+    stream_port::Int = parse(Int, get(ENV, "KAIMON_GATE_STREAM_PORT", "0")),
 )
     mode in (:ipc, :tcp) || throw(ArgumentError("mode must be :ipc or :tcp, got :$mode"))
     _serve(;
@@ -1815,6 +1824,7 @@ function serve(;
         mode,
         host,
         port,
+        stream_port,
     )
 end
 
@@ -1832,6 +1842,7 @@ function _serve(;
     mode::Symbol = :ipc,
     host::String = "127.0.0.1",
     port::Int = 9876,
+    stream_port::Int = 0,
 )
     # Capture original argv for restart replay (once, on first call)
     _capture_original_argv()
@@ -1971,7 +1982,7 @@ function _serve(;
     pub_socket.sndhwm = 0
     pub_socket.linger = 0
     if mode == :tcp
-        bind(pub_socket, "tcp://$(host):0")
+        bind(pub_socket, "tcp://$(host):$(stream_port)")
         stream_endpoint = rstrip(ZMQ._get_last_endpoint(pub_socket), '\0')
     else
         stream_endpoint = "ipc://$(joinpath(SOCK_DIR, "$(sid)-stream.sock"))"
@@ -2345,6 +2356,83 @@ end
 """
 function list_tools()
     _service_request((type = :list_tools,))
+end
+
+# ── kaimon.toml [gate] section support ─────────────────────────────────────────
+
+"""
+    _load_gate_config() -> Dict{String,Any}
+
+Read the `[gate]` section from `kaimon.toml` in the active project root.
+Returns an empty Dict if the file doesn't exist or has no `[gate]` section.
+"""
+function _load_gate_config()
+    project = Base.active_project()
+    project === nothing && return Dict{String,Any}()
+    toml_path = joinpath(dirname(project), "kaimon.toml")
+    isfile(toml_path) || return Dict{String,Any}()
+    try
+        data = TOML.parsefile(toml_path)
+        return get(data, "gate", Dict{String,Any}())
+    catch
+        return Dict{String,Any}()
+    end
+end
+
+"""
+    _auto_serve!()
+
+Auto-start the gate if environment variables or kaimon.toml `[gate]` section
+indicate TCP mode. Called once during module loading.
+
+Configuration priority: env vars > kaimon.toml > defaults.
+"""
+function _auto_serve!()
+    _RUNNING[] && return  # already running
+
+    # Merge kaimon.toml [gate] config with env var overrides
+    toml = _load_gate_config()
+    toml_mode = get(toml, "mode", "")
+    toml_port = get(toml, "port", nothing)
+    toml_stream_port = get(toml, "stream_port", nothing)
+    toml_host = get(toml, "host", "")
+    toml_force = Bool(get(toml, "force", false))
+
+    env_mode = get(ENV, "KAIMON_GATE_MODE", "")
+    has_env_port = haskey(ENV, "KAIMON_GATE_PORT") || haskey(ENV, "KAIMON_GATE_STREAM_PORT")
+
+    # Determine effective mode
+    mode = if !isempty(env_mode)
+        Symbol(env_mode)
+    elseif has_env_port
+        :tcp
+    elseif toml_mode == "tcp"
+        :tcp
+    elseif toml_port !== nothing || toml_stream_port !== nothing
+        :tcp
+    else
+        return  # no auto-start configured
+    end
+
+    mode == :tcp || return  # only auto-start for TCP mode
+
+    # Resolve parameters (env > toml > defaults)
+    host = let h = get(ENV, "KAIMON_GATE_HOST", "")
+        !isempty(h) ? h : !isempty(toml_host) ? toml_host : "127.0.0.1"
+    end
+    port = let p = get(ENV, "KAIMON_GATE_PORT", "")
+        !isempty(p) ? parse(Int, p) : toml_port !== nothing ? Int(toml_port) : 0
+    end
+    stream_port = let sp = get(ENV, "KAIMON_GATE_STREAM_PORT", "")
+        !isempty(sp) ? parse(Int, sp) : toml_stream_port !== nothing ? Int(toml_stream_port) : 0
+    end
+    force = toml_force || has_env_port || !isempty(env_mode)
+
+    try
+        serve(; mode, host, port, stream_port, force)
+    catch e
+        @warn "Gate auto-start failed" exception=e
+    end
 end
 
 end # module Gate

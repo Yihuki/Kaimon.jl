@@ -2437,4 +2437,9 @@ end
 
 include("precompile.jl")
 
+function __init__()
+    # Auto-start TCP gate if configured via env vars or kaimon.toml [gate]
+    Gate._auto_serve!()
+end
+
 end #module

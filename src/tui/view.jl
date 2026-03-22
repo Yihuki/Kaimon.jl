@@ -1,5 +1,59 @@
 # ── View ──────────────────────────────────────────────────────────────────────
 
+# ── Tab color generation from theme ──────────────────────────────────────────
+
+function _rgb_to_hsl(r::Float64, g::Float64, b::Float64)
+    cmax = max(r, g, b)
+    cmin = min(r, g, b)
+    delta = cmax - cmin
+    l = (cmax + cmin) / 2.0
+    if delta < 1e-6
+        return (0.0, 0.0, l)
+    end
+    s = delta / (1.0 - abs(2.0 * l - 1.0))
+    h = if cmax == r
+        60.0 * mod((g - b) / delta, 6.0)
+    elseif cmax == g
+        60.0 * ((b - r) / delta + 2.0)
+    else
+        60.0 * ((r - g) / delta + 4.0)
+    end
+    (h, s, l)
+end
+
+function _hsl_to_rgb(h::Float64, s::Float64, l::Float64)
+    c = (1.0 - abs(2.0 * l - 1.0)) * s
+    x = c * (1.0 - abs(mod(h / 60.0, 2.0) - 1.0))
+    m = l - c / 2.0
+    r1, g1, b1 = if h < 60; (c, x, 0.0)
+    elseif h < 120; (x, c, 0.0)
+    elseif h < 180; (0.0, c, x)
+    elseif h < 240; (0.0, x, c)
+    elseif h < 300; (x, 0.0, c)
+    else; (c, 0.0, x)
+    end
+    (r1 + m, g1 + m, b1 + m)
+end
+
+"""Generate 9 distinct tab colors by rotating hue from the theme's accent color."""
+function _generate_tab_colors(th)
+    accent = to_rgb(th.accent)
+    r, g, b = Float64(accent.r) / 255, Float64(accent.g) / 255, Float64(accent.b) / 255
+    h, s, l = _rgb_to_hsl(r, g, b)
+    # Keep saturation and lightness, rotate hue evenly across 9 tabs
+    colors = Style[]
+    for i in 0:8
+        hi = mod(h + i * 40.0, 360.0)  # 40° apart = good separation
+        ri, gi, bi = _hsl_to_rgb(hi, s, clamp(l, 0.4, 0.7))
+        push!(colors, Style(fg=ColorRGB(
+            round(UInt8, ri * 255),
+            round(UInt8, gi * 255),
+            round(UInt8, bi * 255),
+        )))
+    end
+    colors
+end
+
 """Write a sequence of (text, style) pairs at (x, y), advancing x after each."""
 function _write_spans!(buf::Buffer, x::Int, y::Int, parts)
     cx = x
@@ -256,19 +310,33 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
     main = render(outer, f.area, buf)
     main.width < 4 && return
 
-    rows = tsplit(Layout(Vertical, [Fixed(1), Fill(), Fixed(1)]), main)
+    rows = tsplit(Layout(Vertical, [Fixed(tab_height(m.tab_bar.tab_style.decoration)), Fill(), Fixed(1)]), main)
     length(rows) < 3 && return
     tab_area = rows[1]
     content_area = rows[2]
     status_area = rows[3]
 
     # ── Tab bar ──
-    m._tab_bar_area = tab_area
-
-    # Sync active tab and dynamic label styles
-    m.tab_bar.active = m.active_tab
+    # Dynamic label styles (Debug tab changes color when paused)
     debug_style = m.debug_state == :paused ? tstyle(:error, bold = true) : tstyle(:text)
     m.tab_bar.labels[7] = [Span("7", tstyle(:warning)), Span(" Debug", debug_style)]
+
+    # Sync tab bar active/inactive styles with theme (in case theme changed)
+    th = Tachikoma.theme()
+    th_accent = th.accent
+    if m._tab_theme_accent != th_accent
+        m._tab_theme_accent = th_accent
+        ts = m.tab_bar.tab_style
+        m.tab_bar.tab_style = TabBarStyle(
+            decoration = ts.decoration,
+            active = tstyle(:accent, bold=true),
+            inactive = tstyle(:text_dim),
+            separator = ts.separator,
+            overflow_char = ts.overflow_char,
+            overflow_style = ts.overflow_style,
+            tab_colors = ts.tab_colors,
+        )
+    end
 
     render(m.tab_bar, tab_area, buf)
 
@@ -277,7 +345,7 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
     _drain_test_updates!(m.test_runs)
 
     # ── Content by tab ──
-    @match m.active_tab begin
+    @match m.tab_bar.active begin
         1 => view_server(m, content_area, f)
         2 => view_sessions(m, content_area, buf)
         3 => begin

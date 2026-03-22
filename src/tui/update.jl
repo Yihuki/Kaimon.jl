@@ -37,17 +37,15 @@ function Tachikoma.update!(m::KaimonModel, evt::MouseEvent)
         return
     end
 
-    # Tab bar click detection
-    if Base.contains(m._tab_bar_area, evt.x, evt.y)
-        result = handle_mouse!(m.tab_bar, evt)
-        if result == :changed
-            _switch_tab!(m, m.tab_bar.active)
-            return
-        end
+    # Tab bar click detection — fully delegated to Tachikoma TabBar
+    result = handle_mouse!(m.tab_bar, evt)
+    if result == :changed
+        _switch_tab!(m, m.tab_bar.active)
+        return
     end
 
     # Route mouse events to scroll panes and resizable layouts
-    @match m.active_tab begin
+    @match m.tab_bar.active begin
         1 => begin
             handle_resize!(m.server_layout, evt)
             m.log_pane !== nothing && handle_mouse!(m.log_pane, evt)
@@ -321,7 +319,7 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
     m.shutting_down && return
 
     # Session terminal captures all input except Escape
-    if m.session_terminal_open && m.session_terminal !== nothing && m.active_tab == 2
+    if m.session_terminal_open && m.session_terminal !== nothing && m.tab_bar.active == 2
         if evt.key == :escape
             _close_session_terminal!(m)
             return
@@ -392,7 +390,7 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
     end
 
     # When an extension TUI panel is open, capture all input
-    if m.active_tab == 8 && m.ext_panel !== nothing
+    if m.tab_bar.active == 8 && m.ext_panel !== nothing
         if evt.key == :escape
             close_ext_panel!(m)
         else
@@ -402,7 +400,7 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
     end
 
     # When an extension flow is active, route all input there
-    if m.active_tab == 8 && m.ext_flow != :idle
+    if m.tab_bar.active == 8 && m.ext_flow != :idle
         evt.key == :escape && (m.ext_flow = :idle; return)
         _handle_ext_flow_input!(m, evt)
         return
@@ -415,72 +413,72 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
     end
 
     # When a stress modal is open, capture all input
-    if m.active_tab == 9 && m.stress_modal != :none
+    if m.tab_bar.active == 9 && m.stress_modal != :none
         _handle_stress_modal_key!(m, evt)
         return
     end
 
     # When a stress test form field is in edit mode, capture all input
-    if m.active_tab == 9 && m.stress_editing
+    if m.tab_bar.active == 9 && m.stress_editing
         _handle_stress_field_edit!(m, evt)
         return
     end
 
     # When activity filter popup is open, capture all input
-    if m.active_tab == 3 && m.activity_filter_open
+    if m.tab_bar.active == 3 && m.activity_filter_open
         _handle_activity_filter_key!(m, evt)
         return
     end
 
     # When collection picker popup is open, capture all input
-    if m.active_tab == 4 && m.search_collection_picker_open
+    if m.tab_bar.active == 4 && m.search_collection_picker_open
         _handle_collection_picker_key!(m, evt)
         return
     end
 
     # When search config panel is open, capture all input
-    if m.active_tab == 4 && m.search_config_open
+    if m.tab_bar.active == 4 && m.search_config_open
         _handle_search_config_key!(m, evt)
         return
     end
 
     # When collection manager modal is open, capture all input
-    if m.active_tab == 4 && m.search_manage_open
+    if m.tab_bar.active == 4 && m.search_manage_open
         _handle_search_manage_key!(m, evt)
         return
     end
 
     # When collection detail overlay is open, any key closes it
-    if m.active_tab == 4 && m.search_detail_open
+    if m.tab_bar.active == 4 && m.search_detail_open
         m.search_detail_open = false
         return
     end
 
     # When test session picker is open, route all input there
-    if m.active_tab == 5 && m.test_session_picker_open
+    if m.tab_bar.active == 5 && m.test_session_picker_open
         _handle_test_picker_key!(m, evt)
         return
     end
 
     # When search query is being edited, capture all input
-    if m.active_tab == 4 && m.search_query_editing
+    if m.tab_bar.active == 4 && m.search_query_editing
         _handle_search_query_edit!(m, evt)
         return
     end
 
     # When debug input is being edited, capture all input
-    if m.active_tab == 7 && m.debug_input_editing
+    if m.tab_bar.active == 7 && m.debug_input_editing
         Base.invokelatest(_handle_debug_input_edit!, m, evt)
         return
     end
 
-    tab = m.active_tab
+    tab = m.tab_bar.active
 
     # ── Global keys (handled before per-tab dispatch) ──
     @match (evt.key, evt.char) begin
         # Quit (skip when debug console is active — let it type)
         (:char, 'q') => begin
-            if m.active_tab == 7 && m.debug_state == :paused && get(m.focused_pane, 7, 1) == 2
+            if m.tab_bar.active == 7 && m.debug_state == :paused && get(m.focused_pane, 7, 1) == 2
                 # Fall through to per-tab dispatch
             else
                 m.quit_confirm = true; return
@@ -712,7 +710,7 @@ function Tachikoma.update!(m::KaimonModel, evt::KeyEvent)
 end
 
 function _handle_nav!(m::KaimonModel, evt::KeyEvent)
-    tab = m.active_tab
+    tab = m.tab_bar.active
     fp = get(m.focused_pane, tab, 1)
 
     @match (tab, fp) begin
@@ -987,7 +985,7 @@ end
 # ── Tab switching ────────────────────────────────────────────────────────────
 
 function _switch_tab!(m::KaimonModel, tab::Int)
-    m.active_tab = tab
+    m.tab_bar.active = tab
     # Trigger async refresh when entering certain tabs
     if tab == 4
         _refresh_search_health_async!(m)

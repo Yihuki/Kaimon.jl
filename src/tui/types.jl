@@ -102,7 +102,6 @@ end
     tick::Int = 0
 
     # Tabs: 1=Server, 2=Sessions, 3=Activity, 4=Config
-    active_tab::Int = 1
     tab_bar::TabBar = TabBar(
         Vector{Span}[
             [Span("1", tstyle(:warning)), Span(" Server", tstyle(:text))],
@@ -114,8 +113,10 @@ end
             [Span("7", tstyle(:warning)), Span(" Debug", tstyle(:text))],
             [Span("8", tstyle(:warning)), Span(" Extensions", tstyle(:text))],
             [Span("9", tstyle(:warning)), Span(" Advanced", tstyle(:text))],
-        ],
+        ];
+        tab_style = TabBarStyle(decoration = BoxTabs(box=BOX_ROUNDED)),
     )
+    _tab_theme_accent::Any = nothing  # tracks theme accent for tab color regeneration
 
     # REPL connections (managed by ConnectionManager)
     conn_mgr::Union{ConnectionManager,Nothing} = nothing
@@ -237,8 +238,6 @@ end
     # Auto-index: tracks sessions that have already been auto-indexed on connect
     _auto_indexed_sessions::Set{String} = Set{String}()
 
-    # Tab bar area for mouse click detection
-    _tab_bar_area::Rect = Rect()
 
     # Server log scroll pane
     log_pane::Union{ScrollPane,Nothing} = nothing
@@ -419,7 +418,8 @@ end
     tcp_gate_input::Any = nothing       # TextInput for host:port
     tcp_gate_name_input::Any = nothing  # TextInput for display name
     tcp_gate_token_input::Any = nothing # TextInput for auth token
-    _tcp_gate_field::Int = 1            # 1=host:port, 2=name, 3=token
+    tcp_gate_stream_port_input::Any = nothing  # TextInput for PUB stream port
+    _tcp_gate_field::Int = 1            # 1=host:port, 2=name, 3=token, 4=stream_port
 
     # ── Extensions tab (tab 8) ──
     ext_selected::Int = 1                 # selected extension in list

@@ -38,7 +38,7 @@ using PrecompileTools
 
     # Render each tab to compile all view_* methods
     for tab in 1:9
-        m.active_tab = tab
+        m.tab_bar.active = tab
         buf = Buffer(rect)
         frame = Frame(buf, rect, GraphicsRegion[], PixelSnapshot[])
         try
