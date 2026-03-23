@@ -2510,7 +2510,9 @@ to see only running, completed, failed, or cancelled jobs.""",
     args -> begin
         status = get(args, "status", "")
         limit = Int(get(args, "limit", 20))
-        show_stats = Bool(get(args, "stats", false))
+        show_stats = let v = get(args, "stats", false)
+            v isa Bool ? v : v == "true" || v == true
+        end
 
         jobs = Database.list_jobs(; status, limit)
 
