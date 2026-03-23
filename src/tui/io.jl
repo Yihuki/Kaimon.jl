@@ -444,6 +444,33 @@ function _push_inflight_progress!(id::Int, message::String)
     end
 end
 
+# Map eval_id → inflight_id for background jobs
+const _JOB_INFLIGHT_MAP = Dict{String, Int}()
+const _JOB_INFLIGHT_MAP_LOCK = ReentrantLock()
+
+"""Register a background job's eval_id with its inflight_id."""
+function _register_job_inflight!(eval_id::String, inflight_id::Int)
+    lock(_JOB_INFLIGHT_MAP_LOCK) do
+        _JOB_INFLIGHT_MAP[eval_id] = inflight_id
+    end
+end
+
+"""Push inflight progress for a background job by eval_id."""
+function _push_job_progress!(eval_id::String, message::String)
+    inflight_id = lock(_JOB_INFLIGHT_MAP_LOCK) do
+        get(_JOB_INFLIGHT_MAP, eval_id, 0)
+    end
+    inflight_id > 0 && _push_inflight_progress!(inflight_id, message)
+end
+
+"""Complete inflight for a background job by eval_id."""
+function _finish_job_inflight!(eval_id::String)
+    inflight_id = lock(_JOB_INFLIGHT_MAP_LOCK) do
+        pop!(_JOB_INFLIGHT_MAP, eval_id, 0)
+    end
+    inflight_id > 0 && _push_inflight_done!(inflight_id)
+end
+
 """Push an in-flight done event (tool finished executing)."""
 function _push_inflight_done!(id::Int)
     lock(_TUI_INFLIGHT_LOCK) do

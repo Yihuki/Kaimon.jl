@@ -1413,7 +1413,7 @@ function drain_stream_messages!(mgr::ConnectionManager)
                     conn.debug_paused = false
                 end
 
-                # Collect job stash updates into the eval record
+                # Collect job stash updates into the eval record + update inflight
                 if ch == "job_stash" && !isempty(msg_request_id)
                     eq_idx = findfirst('=', data)
                     if eq_idx !== nothing
@@ -1425,6 +1425,19 @@ function drain_stream_messages!(mgr::ConnectionManager)
                                     r.stash[skey] = sval
                                     break
                                 end
+                            end
+                        end
+                    end
+                    # Update inflight display with latest stash summary
+                    lock(mgr.eval_history_lock) do
+                        for r in mgr.eval_history
+                            if r.eval_id == msg_request_id && !isempty(r.stash)
+                                summary = join(["$k=$v" for (k,v) in sort(collect(r.stash); by=first)], " ")
+                                if length(summary) > 80
+                                    summary = first(summary, 80) * "…"
+                                end
+                                _push_job_progress!(msg_request_id, summary)
+                                break
                             end
                         end
                     end

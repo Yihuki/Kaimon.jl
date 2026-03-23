@@ -95,7 +95,7 @@ function _build_extension_script(config::ExtensionConfig)
     using LoggingExtras, Logging, Dates
     global_logger(FormatLogger(stderr; always_flush=true) do io, args
         ts = Dates.format(now(), dateformat"HH:MM:SS")
-        println(io, "[\$(ts) \$(args.level)] \$(args.message)")
+        println(io, "[", ts, " ", args.level, "] ", args.message)
     end)
     using $(m.module_name)
     tools = $(m.module_name).$(m.tools_function)(Kaimon.Gate.GateTool)
