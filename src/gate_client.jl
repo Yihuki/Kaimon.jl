@@ -11,14 +11,16 @@
 
 @enum EvalState EVAL_IDLE EVAL_SENDING EVAL_STREAMING
 
-struct EvalRecord
+mutable struct EvalRecord
     eval_id::String           # 8-hex-char ID
     session_key::String       # first 8 of session_id
     code::String              # original code (truncated to 500 chars for storage)
     started_at::Float64       # time()
     finished_at::Float64      # 0.0 while running
-    status::Symbol            # :running, :completed, :failed, :timeout
+    status::Symbol            # :running, :completed, :failed, :timeout, :promoted
     result_preview::String    # first 500 chars of formatted result (empty while running)
+    full_result::String       # complete formatted result (stored for promoted jobs)
+    promoted::Bool            # true if promoted to background job
 end
 
 struct ProcessDiagnostics
@@ -356,6 +358,8 @@ function _record_eval_start!(mgr::ConnectionManager, eval_id::String, session_ke
         0.0,
         :running,
         "",
+        "",
+        false,
     )
     lock(mgr.eval_history_lock) do
         push!(mgr.eval_history, record)
@@ -368,19 +372,17 @@ function _record_eval_start!(mgr::ConnectionManager, eval_id::String, session_ke
 end
 
 """Record the completion of an eval in the history ring buffer."""
-function _record_eval_done!(mgr::ConnectionManager, eval_id::String, status::Symbol, result_preview::String)
+function _record_eval_done!(mgr::ConnectionManager, eval_id::String, status::Symbol, result_preview::String;
+                            full_result::String = "")
     lock(mgr.eval_history_lock) do
-        for (i, r) in enumerate(mgr.eval_history)
+        for r in mgr.eval_history
             if r.eval_id == eval_id
-                mgr.eval_history[i] = EvalRecord(
-                    r.eval_id,
-                    r.session_key,
-                    r.code,
-                    r.started_at,
-                    time(),
-                    status,
-                    first(result_preview, 500),
-                )
+                r.finished_at = time()
+                r.status = status
+                r.result_preview = first(result_preview, 500)
+                if !isempty(full_result)
+                    r.full_result = full_result
+                end
                 return
             end
         end

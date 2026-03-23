@@ -1391,14 +1391,106 @@ function execute_via_gate_streaming(
         nothing
     end
 
-    response = eval_remote_async(
-        conn,
-        cleaned_code;
-        display_code = code,
-        on_output = on_output,
-        request_id = eval_id,
-    )
+    # Run eval in a background task so we can promote to a job if it takes too long
+    promotion_threshold = 30.0  # seconds before promoting to background job
+    result_channel = Channel{Any}(1)
 
+    eval_task = Threads.@spawn begin
+        response = eval_remote_async(
+            conn,
+            cleaned_code;
+            display_code = code,
+            on_output = on_output,
+            request_id = eval_id,
+        )
+        try; put!(result_channel, response); catch; end
+    end
+
+    # Wait for the result, but promote to background job if too slow
+    response = nothing
+    deadline = time() + promotion_threshold
+    while time() < deadline
+        if isready(result_channel)
+            response = take!(result_channel)
+            break
+        end
+        sleep(0.1)
+    end
+
+    if response === nothing
+        # Eval still running — promote to background job
+        promoted_at = time()
+        if mgr !== nothing
+            lock(mgr.eval_history_lock) do
+                for r in mgr.eval_history
+                    if r.eval_id == eval_id
+                        r.status = :promoted
+                        r.promoted = true
+                        break
+                    end
+                end
+            end
+        end
+
+        # Persist to database so job survives TUI restarts
+        Database.persist_job!(eval_id, short_key(conn), code,
+            mgr !== nothing ? mgr.eval_history[end].started_at : time(), promoted_at)
+
+        # Background task to collect the result when it completes
+        Threads.@spawn begin
+            try
+                res = if isready(result_channel)
+                    take!(result_channel)
+                else
+                    wait(eval_task)
+                    isready(result_channel) ? take!(result_channel) : nothing
+                end
+                if res !== nothing
+                    status = if hasproperty(res, :exception) && res.exception !== nothing
+                        :failed
+                    else
+                        :completed
+                    end
+                    formatted = _format_gate_response(res, show_return_value, quiet, was_stripped, max_output)
+                    preview = if hasproperty(res, :value_repr)
+                        string(res.value_repr)
+                    elseif hasproperty(res, :exception) && res.exception !== nothing
+                        string(res.exception)
+                    else
+                        ""
+                    end
+                    mgr !== nothing && _record_eval_done!(mgr, eval_id, status, preview; full_result = formatted)
+                    Database.update_job!(eval_id;
+                        status = string(status),
+                        result = formatted,
+                        result_preview = preview,
+                        finished_at = time())
+                end
+            catch e
+                err_msg = sprint(showerror, e)
+                mgr !== nothing && _record_eval_done!(mgr, eval_id, :failed, err_msg)
+                Database.update_job!(eval_id;
+                    status = "failed", result = err_msg,
+                    result_preview = first(err_msg, 500), finished_at = time())
+            end
+        end
+
+        started_at = lock(mgr.eval_history_lock) do
+            for r in mgr.eval_history
+                r.eval_id == eval_id && return r.started_at
+            end
+            return time()
+        end
+        elapsed = round(time() - started_at, digits=1)
+        return "⏳ Computation promoted to background job after $(elapsed)s.\n" *
+               "Job ID: $eval_id\n" *
+               "Session: $(isempty(conn.display_name) ? conn.name : conn.display_name)\n" *
+               "Code: $(first(code, 80))$(length(code) > 80 ? "..." : "")\n\n" *
+               "Use `check_eval(eval_id=\"$eval_id\")` to check status and retrieve the result.\n" *
+               "Use `cancel_eval(eval_id=\"$eval_id\")` to cancel if stuck."
+    end
+
+    # Eval completed within threshold — normal path
     # Record eval completion
     if mgr !== nothing
         status = if hasproperty(response, :exception) && response.exception !== nothing
@@ -1583,6 +1675,8 @@ function collect_tools()::Vector{MCPTool}
         stress_test_tool,
         extension_info_tool,
         check_eval_tool,
+        cancel_eval_tool,
+        list_jobs_tool,
         reflection_tools...,
         qdrant_tools...,
     ]

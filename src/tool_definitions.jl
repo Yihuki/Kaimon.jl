@@ -2381,6 +2381,34 @@ The eval ID is delivered as a structured JSON field in two places:
             return nothing
         end
 
+        # Fall back to database for jobs from previous sessions
+        if record === nothing
+            db_job = Database.get_job(eval_id)
+            if db_job !== nothing
+                status = get(db_job, "status", "unknown")
+                code = get(db_job, "code", "")
+                result = get(db_job, "result", "")
+                result_preview = get(db_job, "result_preview", "")
+                started = get(db_job, "started_at", 0.0)
+                finished = get(db_job, "finished_at", 0.0)
+                elapsed_str = if finished > 0.0
+                    elapsed = finished - started
+                    elapsed < 60.0 ? "$(round(elapsed; digits=1))s" : "$(round(Int, elapsed ÷ 60))m $(round(Int, elapsed % 60))s"
+                else
+                    elapsed = time() - started
+                    "$(round(elapsed; digits=1))s (still running)"
+                end
+                code_preview = length(code) > 80 ? first(code, 80) * "..." : code
+                out = "Eval $eval_id (from database)\nStatus: $status\nCode: $code_preview\nElapsed: $elapsed_str"
+                if !isempty(result)
+                    out *= "\n\nFull result:\n$result"
+                elseif !isempty(result_preview)
+                    out *= "\n\nResult preview:\n$result_preview"
+                end
+                return out
+            end
+        end
+
         record === nothing && return "No eval found matching '$eval_id'. History keeps the last $(_EVAL_HISTORY_MAX) evaluations."
 
         elapsed = if record.finished_at > 0
@@ -2403,10 +2431,133 @@ The eval ID is delivered as a structured JSON field in two places:
                      "Code: $code_preview\n" *
                      "Elapsed: $elapsed_str"
 
-        if !isempty(record.result_preview)
+        # For promoted jobs that completed, return the full result
+        if record.promoted && record.status in (:completed, :failed) && !isempty(record.full_result)
+            status_str *= "\n\nFull result:\n$(record.full_result)"
+        elseif !isempty(record.result_preview)
             status_str *= "\n\nResult preview:\n$(record.result_preview)"
         end
 
         status_str
+    end
+)
+
+cancel_eval_tool = @mcp_tool(
+    :cancel_eval,
+    """Cancel a running background job by eval ID.
+
+Marks the job as cancelled in the database. Note: this does not interrupt the
+Julia computation on the gate side (Julia doesn't support thread interruption).
+The result will still be collected but marked as cancelled.""",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "eval_id" => Dict(
+                "type" => "string",
+                "description" => "The eval ID of the background job to cancel",
+            ),
+        ),
+        "required" => ["eval_id"],
+    ),
+    args -> begin
+        eval_id = get(args, "eval_id", "")
+        isempty(eval_id) && return "Error: eval_id is required."
+
+        # Check in-memory first
+        mgr = GATE_CONN_MGR[]
+        if mgr !== nothing
+            lock(mgr.eval_history_lock) do
+                for r in mgr.eval_history
+                    if startswith(r.eval_id, eval_id) && r.status in (:running, :promoted)
+                        r.status = :cancelled
+                        r.finished_at = time()
+                    end
+                end
+            end
+        end
+
+        # Update database
+        Database.update_job!(eval_id; status="cancelled", cancelled=true, finished_at=time())
+
+        "Job $eval_id marked as cancelled."
+    end
+)
+
+list_jobs_tool = @mcp_tool(
+    :list_jobs,
+    """List background jobs with optional status filter.
+
+Shows promoted computations that exceeded the time threshold. Use status filter
+to see only running, completed, failed, or cancelled jobs.""",
+    Dict(
+        "type" => "object",
+        "properties" => Dict(
+            "status" => Dict(
+                "type" => "string",
+                "description" => "Filter by status: 'running', 'completed', 'failed', 'cancelled', or empty for all",
+            ),
+            "limit" => Dict(
+                "type" => "integer",
+                "description" => "Max number of jobs to return (default: 20)",
+            ),
+            "stats" => Dict(
+                "type" => "boolean",
+                "description" => "Include aggregate statistics (default: false)",
+            ),
+        ),
+        "required" => [],
+    ),
+    args -> begin
+        status = get(args, "status", "")
+        limit = Int(get(args, "limit", 20))
+        show_stats = Bool(get(args, "stats", false))
+
+        jobs = Database.list_jobs(; status, limit)
+
+        if isempty(jobs)
+            return isempty(status) ? "No background jobs found." : "No $status jobs found."
+        end
+
+        lines = String[]
+        push!(lines, "Background Jobs ($(length(jobs))$(isempty(status) ? "" : ", status=$status")):\n")
+
+        for job in jobs
+            jid = get(job, "eval_id", "?")
+            jstatus = get(job, "status", "?")
+            code = get(job, "code", "")
+            started = get(job, "started_at", 0.0)
+            finished = get(job, "finished_at", 0.0)
+            session = get(job, "session_key", "")
+
+            elapsed = if finished > 0.0
+                finished - started
+            else
+                time() - started
+            end
+            elapsed_str = elapsed < 60.0 ? "$(round(elapsed; digits=1))s" : "$(round(Int, elapsed ÷ 60))m $(round(Int, elapsed % 60))s"
+
+            icon = jstatus == "completed" ? "✓" : jstatus == "running" ? "⏳" : jstatus == "failed" ? "✗" : "⊘"
+            code_preview = length(code) > 60 ? first(code, 60) * "..." : code
+
+            push!(lines, "$icon $jid [$jstatus] $(elapsed_str) — $code_preview")
+        end
+
+        if show_stats
+            stats = Database.get_job_stats()
+            if !isempty(stats)
+                push!(lines, "\nStatistics:")
+                push!(lines, "  Total: $(get(stats, "total", 0))")
+                push!(lines, "  Running: $(get(stats, "running", 0))")
+                push!(lines, "  Completed: $(get(stats, "completed", 0))")
+                push!(lines, "  Failed: $(get(stats, "failed", 0))")
+                push!(lines, "  Cancelled: $(get(stats, "cancelled", 0))")
+                avg = get(stats, "avg_duration", nothing)
+                avg !== nothing && avg !== missing && push!(lines, "  Avg duration: $(round(avg; digits=1))s")
+                maxd = get(stats, "max_duration", nothing)
+                maxd !== nothing && maxd !== missing && push!(lines, "  Max duration: $(round(maxd; digits=1))s")
+            end
+        end
+
+        join(lines, "\n")
     end
 )

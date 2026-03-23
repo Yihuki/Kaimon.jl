@@ -91,6 +91,12 @@ function _build_extension_script(config::ExtensionConfig)
     catch; end
     insert!(LOAD_PATH, 1, $(repr(kaimon_dir)))
     using Kaimon
+    # Auto-flushing logger so extension output is visible immediately in the log file
+    using LoggingExtras, Logging, Dates
+    global_logger(FormatLogger(stderr; always_flush=true) do io, args
+        ts = Dates.format(now(), dateformat"HH:MM:SS")
+        println(io, "[\$(ts) \$(args.level)] \$(args.message)")
+    end)
     using $(m.module_name)
     tools = $(m.module_name).$(m.tools_function)(Kaimon.Gate.GateTool)
     Kaimon.Gate.serve(tools=tools, namespace=$(repr(m.namespace)), force=true, allow_mirror=false, allow_restart=false, spawned_by="extension"$on_shutdown_kwarg)
