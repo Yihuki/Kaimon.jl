@@ -1527,6 +1527,7 @@ function handle_message(request::NamedTuple)
         # stays responsive to pings during CPU-intensive evals.
         Threads.@spawn begin
             try
+                task_local_storage(:gate_request_id, request_id)
                 result = gate_eval(code; display_code = display_code)
                 try
                     _publish_stream("eval_complete", _serialize_result(result); request_id)
