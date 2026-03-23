@@ -2313,6 +2313,15 @@ function stash(key::String, value; job_id::String="")
         end
         _JOB_SAFEHOUSE[job_id][key] = value
     end
+    # Publish stash update so TUI can collect it
+    try
+        repr_v = sprint(show, value; context=:limit => true)
+        if length(repr_v) > 500
+            repr_v = first(repr_v, 500) * "..."
+        end
+        _publish_stream("job_stash", "$key=$repr_v"; request_id = job_id)
+    catch
+    end
     nothing
 end
 

@@ -21,6 +21,7 @@ mutable struct EvalRecord
     result_preview::String    # first 500 chars of formatted result (empty while running)
     full_result::String       # complete formatted result (stored for promoted jobs)
     promoted::Bool            # true if promoted to background job
+    stash::Dict{String,String} # key => repr(value) from Gate.stash()
 end
 
 struct ProcessDiagnostics
@@ -360,6 +361,7 @@ function _record_eval_start!(mgr::ConnectionManager, eval_id::String, session_ke
         "",
         "",
         false,
+        Dict{String,String}(),
     )
     lock(mgr.eval_history_lock) do
         push!(mgr.eval_history, record)
@@ -1409,6 +1411,24 @@ function drain_stream_messages!(mgr::ConnectionManager)
                     conn.debug_paused = true
                 elseif ch == "breakpoint_resumed"
                     conn.debug_paused = false
+                end
+
+                # Collect job stash updates into the eval record
+                if ch == "job_stash" && !isempty(msg_request_id)
+                    eq_idx = findfirst('=', data)
+                    if eq_idx !== nothing
+                        skey = data[1:eq_idx-1]
+                        sval = data[eq_idx+1:end]
+                        lock(mgr.eval_history_lock) do
+                            for r in mgr.eval_history
+                                if r.eval_id == msg_request_id
+                                    r.stash[skey] = sval
+                                    break
+                                end
+                            end
+                        end
+                    end
+                    routed = true
                 end
 
                 # Collect for deferred event listener notification (outside mgr.lock)
