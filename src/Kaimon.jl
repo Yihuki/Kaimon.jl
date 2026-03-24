@@ -1293,6 +1293,64 @@ end
 
 Format a gate eval response into the final result string.
 """
+"""
+    _reconcile_stale_jobs!(conn_mgr)
+
+Check the database for background jobs stuck in 'running' status and try to
+retrieve their results from the gate session's result cache. Called once on
+TUI startup after sessions have had time to connect.
+"""
+function _reconcile_stale_jobs!(conn_mgr)
+    conn_mgr === nothing && return
+    running_jobs = Database.list_jobs(; status="running", limit=50)
+    isempty(running_jobs) && return
+    _push_log!(:info, "Reconciling $(length(running_jobs)) stale background job(s)")
+
+    for job in running_jobs
+        eval_id = get(job, "eval_id", "")
+        session_key = get(job, "session_key", "")
+        isempty(eval_id) || isempty(session_key) && continue
+
+        conn = get_connection_by_key(conn_mgr, session_key)
+        if conn === nothing
+            # Session not connected — mark as lost if old enough
+            started = get(job, "started_at", 0.0)
+            if started > 0 && time() - started > 3600  # 1 hour
+                Database.update_job!(eval_id; status="lost", finished_at=time())
+                _push_log!(:warn, "Job $eval_id marked as lost (session gone)")
+            end
+            continue
+        end
+
+        # Try to retrieve cached result from the gate
+        try
+            result = _req_send_recv(conn,
+                (type = :get_job_result, eval_id = eval_id);
+                caller_timeout = 5.0)
+            if result.ok && get(result.response, :type, :error) == :job_result
+                data = get(result.response, :data, "")
+                if !isempty(data)
+                    # Deserialize and format the result
+                    response = try
+                        deserialize(IOBuffer(Vector{UInt8}(data)))
+                    catch
+                        (stdout="", stderr="", value_repr=data, exception=nothing, backtrace=nothing)
+                    end
+                    formatted = _format_gate_response(response, true, false, Ref(false), 6000)
+                    preview = hasproperty(response, :value_repr) ? string(response.value_repr) : ""
+                    status = hasproperty(response, :exception) && response.exception !== nothing ? "failed" : "completed"
+                    Database.update_job!(eval_id;
+                        status=status, result=formatted,
+                        result_preview=first(preview, 500), finished_at=time())
+                    _push_log!(:info, "Job $eval_id reconciled: $status")
+                end
+            end
+        catch e
+            @debug "Failed to reconcile job $eval_id" exception=e
+        end
+    end
+end
+
 function _format_gate_response(
     response,
     show_return_value::Bool,

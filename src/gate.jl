@@ -1530,7 +1530,16 @@ function handle_message(request::NamedTuple)
                 task_local_storage(:gate_request_id, request_id)
                 result = gate_eval(code; display_code = display_code)
                 try
-                    _publish_stream("eval_complete", _serialize_result(result); request_id)
+                    serialized = _serialize_result(result)
+                    # Cache result so TUI can retrieve it after a restart
+                    lock(_COMPLETED_RESULTS_LOCK) do
+                        _COMPLETED_RESULTS[request_id] = Vector{UInt8}(serialized)
+                        # Trim to max size
+                        while length(_COMPLETED_RESULTS) > _COMPLETED_RESULTS_MAX
+                            delete!(_COMPLETED_RESULTS, first(keys(_COMPLETED_RESULTS)))
+                        end
+                    end
+                    _publish_stream("eval_complete", serialized; request_id)
                 catch pub_err
                     # Serialization of result failed — send a plain-text fallback
                     @error "Failed to serialize eval result" exception = pub_err
@@ -1698,6 +1707,17 @@ function handle_message(request::NamedTuple)
             return (type = :error, message = "Not paused at a breakpoint")
         put!(resume_ch, :continue)
         return (type = :ok, message = "Execution resumed")
+
+    elseif msg_type == :get_job_result
+        eid = string(get(request, :eval_id, ""))
+        cached = lock(_COMPLETED_RESULTS_LOCK) do
+            get(_COMPLETED_RESULTS, eid, nothing)
+        end
+        if cached !== nothing
+            return (type = :job_result, eval_id = eid, data = String(cached))
+        else
+            return (type = :not_found, eval_id = eid)
+        end
 
     elseif msg_type == :cancel_job
         eid = string(get(request, :eval_id, ""))
@@ -2296,6 +2316,14 @@ const _JOB_SAFEHOUSE_LOCK = ReentrantLock()
 
 const _CANCELLED_JOBS = Set{String}()
 const _CANCELLED_JOBS_LOCK = ReentrantLock()
+
+# ── Completed Job Results Cache ──────────────────────────────────────────────
+# Stores serialized results of completed evals so the TUI can retrieve them
+# after a restart (when the original PUB/SUB delivery was missed).
+
+const _COMPLETED_RESULTS = Dict{String, Vector{UInt8}}()  # eval_id → serialized result
+const _COMPLETED_RESULTS_LOCK = ReentrantLock()
+const _COMPLETED_RESULTS_MAX = 50  # keep last N results
 
 """
     cancel_job!(eval_id::String)

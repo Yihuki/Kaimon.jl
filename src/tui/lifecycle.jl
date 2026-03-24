@@ -233,6 +233,12 @@ function Tachikoma.init!(m::KaimonModel, _t::Tachikoma.Terminal)
 
         # Start managed extensions (spawns subprocesses for auto_start extensions)
         start_extensions!()
+
+        # Reconcile stale background jobs after sessions connect
+        Threads.@spawn begin
+            sleep(10)  # give sessions time to connect
+            _reconcile_stale_jobs!(m.conn_mgr)
+        end
     end
 
     m.gate_mirror_repl = get_gate_mirror_repl_preference()
