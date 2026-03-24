@@ -1289,11 +1289,6 @@ function _prepare_gate_code(code::String, quiet::Bool)
 end
 
 """
-    _format_gate_response(response, show_return_value, quiet, was_stripped, max_output) -> String
-
-Format a gate eval response into the final result string.
-"""
-"""
     _reconcile_stale_jobs!(conn_mgr)
 
 Check the database for background jobs stuck in 'running' status and try to
@@ -1351,6 +1346,7 @@ function _reconcile_stale_jobs!(conn_mgr)
     end
 end
 
+"""Format a gate eval response into the final result string."""
 function _format_gate_response(
     response,
     show_return_value::Bool,
