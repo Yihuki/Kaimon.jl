@@ -53,43 +53,58 @@ end
 """
     _kill_orphan_extension_processes!(project_path, namespace)
 
-Find and kill any Julia processes that appear to be running the same extension
-(matching project path in their command line). These are orphans from previous
-Kaimon instances where the Process handle was lost on restart.
+Find and kill any Julia processes marked as Kaimon extensions for the same
+namespace. Uses the KAIMON_EXTENSION env var set on spawned processes to
+positively identify Kaimon-owned processes (won't accidentally kill user processes).
 """
 function _kill_orphan_extension_processes!(project_path::String, namespace::String)
     Sys.isunix() || return
     my_pid = getpid()
     try
-        # Find julia processes whose command line contains this project path
-        # and the extension marker (spawned_by="extension")
-        out = read(pipeline(`pgrep -f $project_path`; stderr=devnull), String)
+        # Read /proc/<pid>/environ on Linux, or use ps -E on macOS
+        if Sys.isapple()
+            # On macOS, ps -E shows environment. Use pgrep to find julia processes,
+            # then check their environment via /proc simulation or launchctl.
+            # Simpler: check command line for the spawned_by marker AND project path
+            out = read(pipeline(`pgrep -f julia`; stderr=devnull), String)
+        else
+            out = read(pipeline(`pgrep -f julia`; stderr=devnull), String)
+        end
         for line in split(strip(out), '\n')
             isempty(line) && continue
             pid = tryparse(Int, strip(line))
             pid === nothing && continue
             pid == my_pid && continue
-            # Verify it's actually an extension process by checking the command line
+            # Check if this process has our KAIMON_EXTENSION env var
+            is_our_extension = false
             try
-                cmdline = read(pipeline(`ps -p $pid -o command=`; stderr=devnull), String)
-                # Must match: spawned by extension manager (has the project path + Gate.serve)
-                if contains(cmdline, project_path) && contains(cmdline, "spawned_by=\"extension\"")
-                    _push_log!(:info, "Killing orphan extension process for '$namespace' (PID=$pid)")
-                    run(pipeline(`kill $pid`; stderr=devnull); wait=false)
-                    # Wait briefly then force kill if needed
-                    sleep(1.0)
-                    try
-                        run(pipeline(`kill -0 $pid`; stderr=devnull))
-                        run(pipeline(`kill -9 $pid`; stderr=devnull); wait=false)
-                    catch
-                        # Process already gone
-                    end
+                if Sys.islinux()
+                    # Linux: read /proc/pid/environ
+                    environ = read("/proc/$pid/environ", String)
+                    is_our_extension = contains(environ, "KAIMON_EXTENSION=$namespace")
+                else
+                    # macOS: fall back to command-line matching (env not easily readable)
+                    cmdline = read(pipeline(`ps -p $pid -o command=`; stderr=devnull), String)
+                    is_our_extension = contains(cmdline, project_path) &&
+                        contains(cmdline, "spawned_by=\"extension\"")
                 end
             catch
             end
+            if is_our_extension
+                _push_log!(:info, "Killing orphan extension '$namespace' (PID=$pid)")
+                try
+                    run(pipeline(`kill $pid`; stderr=devnull); wait=false)
+                    sleep(1.0)
+                    # Force kill if still alive
+                    try
+                        run(pipeline(`kill -0 $pid`; stderr=devnull))
+                        run(pipeline(`kill -9 $pid`; stderr=devnull); wait=false)
+                    catch; end
+                catch; end
+            end
         end
     catch
-        # pgrep not available or no matches — that's fine
+        # pgrep not available or no matches
     end
 end
 
@@ -203,6 +218,9 @@ function spawn_extension!(ext::ManagedExtension)
         env = copy(ENV)
         delete!(env, "JULIA_LOAD_PATH")
         delete!(env, "JULIA_PROJECT")
+        # Mark this process as Kaimon-spawned so we can identify orphans
+        env["KAIMON_EXTENSION"] = ext.config.manifest.namespace
+        env["KAIMON_PARENT_PID"] = string(getpid())
         flags = ext.config.manifest.julia_flags
         if isempty(flags)
             flags = ["-t", "auto"]
