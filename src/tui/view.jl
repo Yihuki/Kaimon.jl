@@ -470,8 +470,8 @@ function view_server(m::KaimonModel, area::Rect, f::Frame)
     # ── Top: Server status panel ──
     status_block = Block(
         title = "Server Status",
-        border_style = _pane_border(m, 1, 1),
-        title_style = _pane_title(m, 1, 1),
+        border_style = _pane_border(m, TAB_SERVER, 1),
+        title_style = _pane_title(m, TAB_SERVER, 1),
     )
     si = render(status_block, rows[1], buf)
     if si.width >= 4
@@ -514,8 +514,8 @@ function view_server(m::KaimonModel, area::Rect, f::Frame)
     follow_hint = pane.following ? "[F]ollow:on" : "[F]ollow:off"
     pane.block = Block(
         title = "Server Log ($(length(m.server_log))) [$wrap_hint] $follow_hint",
-        border_style = _pane_border(m, 1, 2),
-        title_style = _pane_title(m, 1, 2),
+        border_style = _pane_border(m, TAB_SERVER, 2),
+        title_style = _pane_title(m, TAB_SERVER, 2),
     )
     m._log_pane_width = rows[2].width - 2   # -2 for border
     _sync_log_pane!(m, m._log_pane_width)

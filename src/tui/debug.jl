@@ -39,8 +39,8 @@ function _view_debug_locals(m::KaimonModel, area::Rect, buf::Buffer)
         render(
             Block(
                 title = "Debug",
-                border_style = _pane_border(m, 7, 1),
-                title_style = _pane_title(m, 7, 1),
+                border_style = _pane_border(m, TAB_DEBUG, 1),
+                title_style = _pane_title(m, TAB_DEBUG, 1),
             ),
             area,
             buf,
@@ -69,7 +69,7 @@ function _view_debug_locals(m::KaimonModel, area::Rect, buf::Buffer)
         title = "◉ Paused$loc$sess"
         pane.block = Block(
             title = title,
-            border_style = _pane_border(m, 7, 1),
+            border_style = _pane_border(m, TAB_DEBUG, 1),
             title_style = tstyle(:error, bold = true),
         )
         render(pane, area, buf)
@@ -85,8 +85,8 @@ function _view_debug_console(m::KaimonModel, area::Rect, buf::Buffer)
         render(
             Block(
                 title = "Console",
-                border_style = _pane_border(m, 7, 2),
-                title_style = _pane_title(m, 7, 2),
+                border_style = _pane_border(m, TAB_DEBUG, 2),
+                title_style = _pane_title(m, TAB_DEBUG, 2),
             ),
             area,
             buf,
@@ -107,8 +107,8 @@ function _view_debug_console(m::KaimonModel, area::Rect, buf::Buffer)
     end
     pane.block = Block(
         title = title_str,
-        border_style = _pane_border(m, 7, 2),
-        title_style = _pane_title(m, 7, 2),
+        border_style = _pane_border(m, TAB_DEBUG, 2),
+        title_style = _pane_title(m, TAB_DEBUG, 2),
     )
 
     # Add infil> prompt as last line in pane content when paused

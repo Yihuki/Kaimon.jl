@@ -533,8 +533,8 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
             selected = display_sel,
             block = Block(
                 title = list_title,
-                border_style = _pane_border(m, 3, 1),
-                title_style = _pane_title(m, 3, 1),
+                border_style = _pane_border(m, TAB_ACTIVITY, 1),
+                title_style = _pane_title(m, TAB_ACTIVITY, 1),
             ),
             tick = m.tick,
             row_styles = row_styles,
@@ -557,8 +557,8 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
         dt.tick = m.tick
         dt.block = Block(
             title = list_title,
-            border_style = _pane_border(m, 3, 1),
-            title_style = _pane_title(m, 3, 1),
+            border_style = _pane_border(m, TAB_ACTIVITY, 1),
+            title_style = _pane_title(m, TAB_ACTIVITY, 1),
         )
     end
 
@@ -576,8 +576,8 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
     if !show_inflight && !show_completed
         empty_block = Block(
             title = "Details",
-            border_style = _pane_border(m, 3, 2),
-            title_style = _pane_title(m, 3, 2),
+            border_style = _pane_border(m, TAB_ACTIVITY, 2),
+            title_style = _pane_title(m, TAB_ACTIVITY, 2),
         )
         ei = render(empty_block, panes[2], buf)
         if ei.width >= 4
@@ -637,8 +637,8 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
         detail_title = "$(ifc.tool_name) (running)"
         p.block = Block(
             title = detail_title,
-            border_style = _pane_border(m, 3, 2),
-            title_style = _pane_title(m, 3, 2),
+            border_style = _pane_border(m, TAB_ACTIVITY, 2),
+            title_style = _pane_title(m, TAB_ACTIVITY, 2),
         )
         # Preserve scroll offset from previous frame's paragraph
         if m.detail_paragraph !== nothing && m._detail_for_result == -2
@@ -709,8 +709,8 @@ function view_activity(m::KaimonModel, area::Rect, buf::Buffer)
 
         m.detail_paragraph.block = Block(
             title = detail_title,
-            border_style = _pane_border(m, 3, 2),
-            title_style = _pane_title(m, 3, 2),
+            border_style = _pane_border(m, TAB_ACTIVITY, 2),
+            title_style = _pane_title(m, TAB_ACTIVITY, 2),
         )
 
         render(m.detail_paragraph, panes[2], buf)

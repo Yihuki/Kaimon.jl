@@ -56,8 +56,8 @@ function view_sessions(m::KaimonModel, area::Rect, buf::Buffer)
     scroll_indicator = m.sessions_detail_scroll > 0 ? " ↑$(m.sessions_detail_scroll)" : ""
     detail_block = Block(
         title = "Details$scroll_indicator",
-        border_style = _pane_border(m, 2, 3),
-        title_style = _pane_title(m, 2, 3),
+        border_style = _pane_border(m, TAB_SESSIONS, 3),
+        title_style = _pane_title(m, TAB_SESSIONS, 3),
     )
     detail_area = render(detail_block, cols[2], buf)
     m._sessions_detail_area = detail_area
@@ -312,8 +312,8 @@ function _sync_sessions_table!(m::KaimonModel, connections::Vector{REPLConnectio
         selected = n > 0 ? clamp(m.selected_connection, 1, n) : 0,
         block = Block(
             title = "REPL Sessions ($n) [x] shutdown [t] trace",
-            border_style = _pane_border(m, 2, 1),
-            title_style = _pane_title(m, 2, 1),
+            border_style = _pane_border(m, TAB_SESSIONS, 1),
+            title_style = _pane_title(m, TAB_SESSIONS, 1),
         ),
         tick = m.tick,
         row_styles = row_styles,
@@ -370,8 +370,8 @@ function _sync_agents_table!(m::KaimonModel, agent_sessions)
         selected = 0,
         block = Block(
             title = n > 0 ? "Agents ($n)" : "Agents",
-            border_style = _pane_border(m, 2, 2),
-            title_style = _pane_title(m, 2, 2),
+            border_style = _pane_border(m, TAB_SESSIONS, 2),
+            title_style = _pane_title(m, TAB_SESSIONS, 2),
         ),
         tick = m.tick,
     )

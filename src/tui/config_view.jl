@@ -20,8 +20,8 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
     # Server info
     srv_block = Block(
         title = "Server",
-        border_style = _pane_border(m, 6, 1),
-        title_style = _pane_title(m, 6, 1),
+        border_style = _pane_border(m, TAB_CONFIG, 1),
+        title_style = _pane_title(m, TAB_CONFIG, 1),
     )
     srv = render(srv_block, left_rows[1], buf)
     if srv.width >= 4
@@ -74,8 +74,8 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
     # Actions
     act_block = Block(
         title = "Actions",
-        border_style = _pane_border(m, 6, 2),
-        title_style = _pane_title(m, 6, 2),
+        border_style = _pane_border(m, TAB_CONFIG, 2),
+        title_style = _pane_title(m, TAB_CONFIG, 2),
     )
     act = render(act_block, left_rows[2], buf)
     m._config_actions_area = act
@@ -131,8 +131,8 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
     # ── MCP Client Status ──
     client_block = Block(
         title = "MCP Clients",
-        border_style = _pane_border(m, 6, 3),
-        title_style = _pane_title(m, 6, 3),
+        border_style = _pane_border(m, TAB_CONFIG, 3),
+        title_style = _pane_title(m, TAB_CONFIG, 3),
     )
     client_inner = render(client_block, right_rows[1], buf)
     if client_inner.width >= 4
@@ -167,8 +167,8 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
     managed = get_managed_sessions()
     proj_block = Block(
         title = "Allowed Projects ($n_projects)",
-        border_style = _pane_border(m, 6, 4),
-        title_style = _pane_title(m, 6, 4),
+        border_style = _pane_border(m, TAB_CONFIG, 4),
+        title_style = _pane_title(m, TAB_CONFIG, 4),
     )
     proj_inner = render(proj_block, bottom_cols[1], buf)
     if proj_inner.width >= 4
@@ -228,8 +228,8 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
     n_tcp = length(m.tcp_gate_entries)
     tcp_block = Block(
         title = "TCP Gates ($n_tcp)",
-        border_style = _pane_border(m, 6, 5),
-        title_style = _pane_title(m, 6, 5),
+        border_style = _pane_border(m, TAB_CONFIG, 5),
+        title_style = _pane_title(m, TAB_CONFIG, 5),
     )
     tcp_inner = render(tcp_block, bottom_cols[2], buf)
     if tcp_inner.width >= 4

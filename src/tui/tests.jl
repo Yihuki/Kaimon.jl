@@ -107,8 +107,8 @@ function _sync_tests_table!(m::KaimonModel)
         selected = display_sel,
         block = Block(
             title = "Test Runs ($n) [r]un [x]cancel $follow_str",
-            border_style = _pane_border(m, 5, 1),
-            title_style = _pane_title(m, 5, 1),
+            border_style = _pane_border(m, TAB_TESTS, 1),
+            title_style = _pane_title(m, TAB_TESTS, 1),
         ),
         tick = m.tick,
         row_styles = row_styles,
@@ -135,8 +135,8 @@ function _view_test_detail(m::KaimonModel, area::Rect, buf::Buffer)
         render(
             Block(
                 title = "Results",
-                border_style = _pane_border(m, 5, 2),
-                title_style = _pane_title(m, 5, 2),
+                border_style = _pane_border(m, TAB_TESTS, 2),
+                title_style = _pane_title(m, TAB_TESTS, 2),
             ),
             area,
             buf,
@@ -372,8 +372,8 @@ function _view_test_results(
             total;
             block = Block(
                 title = title,
-                border_style = _pane_border(m, 5, 2),
-                title_style = _pane_title(m, 5, 2),
+                border_style = _pane_border(m, TAB_TESTS, 2),
+                title_style = _pane_title(m, TAB_TESTS, 2),
             ),
             show_scrollbar = true,
             following = false,
@@ -387,8 +387,8 @@ function _view_test_results(
         )
         sp.block = Block(
             title = title,
-            border_style = _pane_border(m, 5, 2),
-            title_style = _pane_title(m, 5, 2),
+            border_style = _pane_border(m, TAB_TESTS, 2),
+            title_style = _pane_title(m, TAB_TESTS, 2),
         )
     end
 
@@ -628,8 +628,8 @@ function _view_test_raw_output(
             reverse = false,
             block = Block(
                 title = title,
-                border_style = _pane_border(m, 5, 2),
-                title_style = _pane_title(m, 5, 2),
+                border_style = _pane_border(m, TAB_TESTS, 2),
+                title_style = _pane_title(m, TAB_TESTS, 2),
             ),
             show_scrollbar = true,
         )
