@@ -37,6 +37,62 @@ function _push_error!(ext::ManagedExtension, msg::String)
     length(ext.error_log) > 20 && deleteat!(ext.error_log, 1:length(ext.error_log) - 20)
 end
 
+"""Send SIGTERM, wait up to 3s, then SIGKILL if still alive."""
+function _kill_process!(proc::Base.Process)
+    try
+        kill(proc, Base.SIGTERM)
+        t0 = time()
+        while Base.process_running(proc) && time() - t0 < 3.0
+            sleep(0.1)
+        end
+        Base.process_running(proc) && kill(proc, Base.SIGKILL)
+    catch
+    end
+end
+
+"""
+    _kill_orphan_extension_processes!(project_path, namespace)
+
+Find and kill any Julia processes that appear to be running the same extension
+(matching project path in their command line). These are orphans from previous
+Kaimon instances where the Process handle was lost on restart.
+"""
+function _kill_orphan_extension_processes!(project_path::String, namespace::String)
+    Sys.isunix() || return
+    my_pid = getpid()
+    try
+        # Find julia processes whose command line contains this project path
+        # and the extension marker (spawned_by="extension")
+        out = read(pipeline(`pgrep -f $project_path`; stderr=devnull), String)
+        for line in split(strip(out), '\n')
+            isempty(line) && continue
+            pid = tryparse(Int, strip(line))
+            pid === nothing && continue
+            pid == my_pid && continue
+            # Verify it's actually an extension process by checking the command line
+            try
+                cmdline = read(pipeline(`ps -p $pid -o command=`; stderr=devnull), String)
+                # Must match: spawned by extension manager (has the project path + Gate.serve)
+                if contains(cmdline, project_path) && contains(cmdline, "spawned_by=\"extension\"")
+                    _push_log!(:info, "Killing orphan extension process for '$namespace' (PID=$pid)")
+                    run(pipeline(`kill $pid`; stderr=devnull); wait=false)
+                    # Wait briefly then force kill if needed
+                    sleep(1.0)
+                    try
+                        run(pipeline(`kill -0 $pid`; stderr=devnull))
+                        run(pipeline(`kill -9 $pid`; stderr=devnull); wait=false)
+                    catch
+                        # Process already gone
+                    end
+                end
+            catch
+            end
+        end
+    catch
+        # pgrep not available or no matches — that's fine
+    end
+end
+
 # ── Spawn / Stop / Restart ───────────────────────────────────────────────────
 
 """
@@ -121,20 +177,14 @@ function spawn_extension!(ext::ManagedExtension)
     # This prevents orphan processes when an extension is marked as crashed
     # (e.g. startup timeout) but the old process is still alive.
     if ext.process !== nothing && Base.process_running(ext.process)
-        try
-            kill(ext.process, Base.SIGTERM)
-            # Give it a moment to exit gracefully
-            t0 = time()
-            while Base.process_running(ext.process) && time() - t0 < 3.0
-                sleep(0.1)
-            end
-            if Base.process_running(ext.process)
-                kill(ext.process, Base.SIGKILL)
-            end
-        catch
-        end
+        _kill_process!(ext.process)
     end
     ext.process = nothing
+
+    # Also kill any orphan processes from previous Kaimon instances that match
+    # this extension's project path. These survive TUI restarts because the
+    # Process handle is lost but the Julia process keeps running.
+    _kill_orphan_extension_processes!(ext.config.entry.project_path, ext.config.manifest.namespace)
 
     ext.status = :starting
     ext.started_at = time()
@@ -490,6 +540,15 @@ function _monitor_extensions!(conn_mgr)
             end
 
             if ext.status == :crashed && ext.config.entry.auto_start
+                # Cap auto-restart attempts to prevent infinite respawning
+                max_restarts = 5
+                if ext.restart_count >= max_restarts
+                    if ext.restart_count == max_restarts  # log once
+                        _push_log!(:warn, "Extension '$ns' exceeded max restarts ($max_restarts), giving up")
+                        ext.restart_count += 1  # prevent repeat logging
+                    end
+                    continue
+                end
                 # Auto-restart with backoff
                 backoff_idx = min(ext.restart_count + 1, length(_EXTENSION_RESTART_BACKOFF))
                 backoff = _EXTENSION_RESTART_BACKOFF[backoff_idx]
