@@ -346,24 +346,24 @@ function Tachikoma.view(m::KaimonModel, f::Frame)
 
     # ── Content by tab ──
     @match m.tab_bar.active begin
-        1 => view_server(m, content_area, f)
-        2 => view_sessions(m, content_area, buf)
-        3 => begin
+        TAB_SERVER => view_server(m, content_area, f)
+        TAB_SESSIONS => view_sessions(m, content_area, buf)
+        TAB_ACTIVITY => begin
             view_activity(m, content_area, buf)
             m.activity_filter_open && _view_activity_filter(m, content_area, buf)
         end
-        4 => view_search(m, content_area, buf)
-        5 => begin
+        TAB_SEARCH => view_search(m, content_area, buf)
+        TAB_TESTS => begin
             # Follow mode: always snap to newest run
             if (m.test_follow || m.selected_test_run == 0) && !isempty(m.test_runs)
                 m.selected_test_run = length(m.test_runs)
             end
             view_tests(m, content_area, buf)
         end
-        6 => view_config(m, content_area, buf)
-        7 => Base.invokelatest(view_debug, m, content_area, buf)
-        8 => view_extensions(m, content_area, buf)
-        9 => view_advanced(m, content_area, buf)
+        TAB_CONFIG => view_config(m, content_area, buf)
+        TAB_DEBUG => Base.invokelatest(view_debug, m, content_area, buf)
+        TAB_EXTENSIONS => view_extensions(m, content_area, buf)
+        TAB_ADVANCED => view_advanced(m, content_area, buf)
         _ => nothing
     end
 

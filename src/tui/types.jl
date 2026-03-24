@@ -94,6 +94,17 @@ end
     last_ping::DateTime = DateTime(0)
 end
 
+# ── Tab indices ───────────────────────────────────────────────────────────────
+const TAB_SERVER     = 1
+const TAB_SESSIONS   = 2
+const TAB_ACTIVITY   = 3
+const TAB_SEARCH     = 4
+const TAB_TESTS      = 5
+const TAB_CONFIG     = 6
+const TAB_DEBUG      = 7
+const TAB_EXTENSIONS = 8
+const TAB_ADVANCED   = 9
+
 # ── Model ─────────────────────────────────────────────────────────────────────
 
 @kwdef mutable struct KaimonModel <: Model
@@ -252,8 +263,11 @@ end
     # Tab 3: 1=list, 2=detail | Tab 4: 1=server, 2=actions, 3=clients
     # Tab 5: 1=form, 2=output | Tab 6: 1=runs list, 2=results
     # Tab 7: 1=form, 2=horde, 3=output | Tab 8: 1=list, 2=detail
-    focused_pane::Dict{Int,Int} =
-        Dict(1 => 2, 2 => 1, 3 => 1, 4 => 1, 5 => 1, 6 => 1, 7 => 2, 8 => 1, 9 => 1)
+    focused_pane::Dict{Int,Int} = Dict(
+        TAB_SERVER => 2, TAB_SESSIONS => 1, TAB_ACTIVITY => 1,
+        TAB_SEARCH => 1, TAB_TESTS => 1, TAB_CONFIG => 1,
+        TAB_DEBUG => 2, TAB_EXTENSIONS => 1, TAB_ADVANCED => 1,
+    )
 
     # ── Tests tab (tab 6) ──
     test_runs::Vector{TestRun} = TestRun[]
@@ -458,7 +472,11 @@ end
 
 # Number of focusable panes per tab
 # Tab order: 1=Server 2=Sessions 3=Activity 4=Search 5=Tests 6=Config 7=Debug 8=Extensions 9=Advanced
-const _PANE_COUNTS = Dict(1 => 2, 2 => 3, 3 => 2, 4 => 3, 5 => 2, 6 => 5, 7 => 2, 8 => 2, 9 => 3)
+const _PANE_COUNTS = Dict(
+    TAB_SERVER => 2, TAB_SESSIONS => 3, TAB_ACTIVITY => 2,
+    TAB_SEARCH => 3, TAB_TESTS => 2, TAB_CONFIG => 5,
+    TAB_DEBUG => 2, TAB_EXTENSIONS => 2, TAB_ADVANCED => 3,
+)
 
 """Return the border style for a pane — highlighted if focused."""
 function _pane_border(m::KaimonModel, tab::Int, pane::Int)

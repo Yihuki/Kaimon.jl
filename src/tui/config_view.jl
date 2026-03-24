@@ -107,6 +107,9 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
         else
             set_string!(buf, x + 4, y, "prefix: $prefix", tstyle(:success))
         end
+        y += 1
+        set_string!(buf, x, y, "[v]", tstyle(:accent, bold = true))
+        set_string!(buf, x + 4, y, "VSCode Remote Control ext", tstyle(:text))
     end
 
     # ── Right column: MCP Clients (top) + Projects & TCP Gates side-by-side (bottom) ──
@@ -206,7 +209,8 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
 
         y = bottom(proj_inner)
         if y >= proj_inner.y + 1
-            set_string!(buf, x, y, "[p] Add  [D] Remove  [e] Launch Config", tstyle(:text_dim))
+            set_string!(buf, x, y, "[p] Add  [D] Remove  [e] Launch Config", tstyle(:text_dim);
+                max_x=right(proj_inner))
         end
     end
 
@@ -277,7 +281,8 @@ function view_config_base(m::KaimonModel, area::Rect, buf::Buffer)
 
         y = bottom(tcp_inner)
         if y >= tcp_inner.y + 1
-            set_string!(buf, x, y, "[T] Add  [X] Remove", tstyle(:text_dim))
+            set_string!(buf, x, y, "[T] Add  [X] Remove  [v] VSCode ext", tstyle(:text_dim);
+                max_x=right(tcp_inner))
         end
     end
 end

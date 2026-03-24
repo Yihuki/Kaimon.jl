@@ -836,3 +836,36 @@ function _remove_opencode(m::KaimonModel)
     m.flow_message = "Removed kaimon from\n$(_short_path(target_file))"
     m.flow_success = true
 end
+
+function _install_vscode_remote_control!(m::KaimonModel)
+    # Find the first enabled project to use as workspace dir
+    workspace = nothing
+    for entry in m.project_entries
+        entry.enabled || continue
+        isdir(entry.project_path) || continue
+        workspace = entry.project_path
+        break
+    end
+    if workspace === nothing
+        m.config_flow = FLOW_CLIENT_RESULT
+        m.flow_message = "No enabled project found.\nAdd a project first."
+        m.flow_success = false
+        return
+    end
+    @async try
+        install_vscode_remote_control(workspace; allowed_commands=[
+            "workbench.action.terminal.new",
+            "workbench.action.terminal.sendSequence",
+            "workbench.action.terminal.focus",
+            "workbench.action.files.save",
+            "workbench.action.files.saveAll",
+        ])
+        m.config_flow = FLOW_CLIENT_RESULT
+        m.flow_message = "VSCode Remote Control installed.\nReload VSCode to activate."
+        m.flow_success = true
+    catch e
+        m.config_flow = FLOW_CLIENT_RESULT
+        m.flow_message = "Install failed:\n$(sprint(showerror, e))"
+        m.flow_success = false
+    end
+end

@@ -77,7 +77,12 @@ function parse_extension_manifest(project_path::AbstractString)
     shutdown_function = String(get(ext, "shutdown_function", ""))
     event_topics = String[String(t) for t in get(ext, "event_topics", String[])]
     tui_file = String(get(ext, "tui_file", ""))
-    julia_flags = String[String(f) for f in get(ext, "julia_flags", String[])]
+    raw_flags = get(ext, "julia_flags", String[])
+    julia_flags = if raw_flags isa AbstractString
+        String.(split(raw_flags))
+    else
+        String[String(f) for f in raw_flags]
+    end
 
     return ExtensionManifest(
         String(namespace),
