@@ -22,6 +22,10 @@ namespace = "myext"
 module = "MyExtension"
 tools_function = "create_gate_tools"
 description = "What this extension does."
+shutdown_function = "cleanup"           # optional
+tui_file = "src/tui_panel.jl"          # optional
+julia_flags = ["-t4,1"]               # optional
+event_topics = ["breakpoint_hit"]      # optional
 ```
 
 | Field | Required | Description |
@@ -31,6 +35,9 @@ description = "What this extension does."
 | `tools_function` | Yes | Exported function that returns `Vector{GateTool}` |
 | `description` | No | Human-readable summary for display in the TUI and `extension_info` |
 | `shutdown_function` | No | Exported no-arg function called before the extension process exits (5 s timeout) |
+| `tui_file` | No | Path to a lightweight TUI panel file (relative to project root). Press `[u]` on the extension in the Extensions tab to open it. |
+| `julia_flags` | No | Julia startup flags for the extension process (e.g., `["-t4,1", "--heap-size-hint=1G"]`). Defaults to `-t auto`. |
+| `event_topics` | No | Stream channels to forward from gate sessions to the extension (e.g., `["breakpoint_hit"]`). Requires an `on_event(channel, data, session_name)` function in the module. |
 
 ## Extension Registry
 

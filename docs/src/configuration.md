@@ -22,9 +22,10 @@ Respects `XDG_CONFIG_HOME` on Linux/macOS; uses `APPDATA` on Windows.
 
 | File | Purpose |
 |------|---------|
-| `config.json` | Global security and editor settings ([details](@ref security-config)) |
+| `config.json` | Global settings: security mode, API keys, editor, qdrant prefix |
 | `projects.json` | Allowed projects for managed sessions ([details](@ref projects-config)) |
 | `extensions.json` | Extension registry ([details](extensions.md)) |
+| `tcp_gates.json` | Registered TCP gate connections (host, port, name, token, stream_port) |
 
 ### Cache — `~/.cache/kaimon/`
 
@@ -72,9 +73,11 @@ The security config controls access to the MCP server via `config.json` at `~/.c
 
 | Field | Description |
 |-------|-------------|
-| `mode` | Security mode: `"strict"` (require API key + IP check), `"permissive"` (localhost only, no key required), or `"off"` |
-| `api_keys` | List of authorized API keys with metadata |
+| `mode` | Security mode: `"strict"` (require API key + IP check), `"relaxed"` (localhost only, no key required), or `"lax"` |
+| `api_keys` | List of authorized API keys |
 | `allowed_ips` | IP addresses permitted to connect |
+| `editor` | Editor for file:line links: `"vscode"`, `"cursor"`, `"zed"`, `"windsurf"` |
+| `qdrant_prefix` | Prefix for Qdrant collection names (for shared instances). Set via Config tab `[Q]` or `KAIMON_QDRANT_PREFIX` env var. |
 
 Use the security management tools to modify these settings programmatically:
 
