@@ -357,56 +357,49 @@ function _render_config_fields(
 )
     field = m.search_manage_config_field
 
-    # Dirs field
-    if y <= max_y
-        cursor = field == 1 ? "▸ " : "  "
-        label_style = field == 1 ? tstyle(:accent, bold = true) : tstyle(:text_dim)
-        set_string!(buf, x, y, cursor, label_style)
-        set_string!(buf, x + 2, y, "Dirs: ", label_style)
-        val = m.search_manage_config_dirs
-        val_style = field == 1 ? tstyle(:accent) : tstyle(:text)
-        display_val = first(val, max_w - 10)
-        set_string!(buf, x + 8, y, display_val, val_style)
-        if field == 1
-            cx = x + 8 + length(display_val)
-            cx <= x + max_w && set_string!(buf, cx, y, "▏", tstyle(:accent))
+    # Helper to render a TextInput field row
+    function _config_field!(field_idx, label, input)
+        y > max_y && return
+        active = field == field_idx
+        cursor = active ? "▸ " : "  "
+        label_style = active ? tstyle(:accent, bold = true) : tstyle(:text_dim)
+        set_string!(buf, x, y, cursor, label_style; max_x=x+max_w)
+        if input !== nothing
+            input.tick = m.tick
+            input.focused = active
+            input_area = Rect(x + 2, y, max_w - 2, 1)
+            if active
+                render(input, input_area, buf)
+            else
+                set_string!(buf, x + 2, y, label, label_style; max_x=x+max_w)
+                set_string!(buf, x + 2 + length(label), y,
+                    Tachikoma.text(input), tstyle(:text); max_x=x+max_w)
+            end
         end
         y += 1
     end
+
+    # Dirs field
+    _config_field!(1, "Dirs: ", m.search_manage_dirs_input)
 
     # Extensions field
-    if y <= max_y
-        cursor = field == 2 ? "▸ " : "  "
-        label_style = field == 2 ? tstyle(:accent, bold = true) : tstyle(:text_dim)
-        set_string!(buf, x, y, cursor, label_style)
-        set_string!(buf, x + 2, y, "Exts: ", label_style)
-        val = m.search_manage_config_exts
-        val_style = field == 2 ? tstyle(:accent) : tstyle(:text)
-        display_val = first(val, max_w - 10)
-        set_string!(buf, x + 8, y, display_val, val_style)
-        if field == 2
-            cx = x + 8 + length(display_val)
-            cx <= x + max_w && set_string!(buf, cx, y, "▏", tstyle(:accent))
-        end
-        y += 1
-    end
+    _config_field!(2, "Exts: ", m.search_manage_exts_input)
+
+    # Exclude dirs field
+    _config_field!(3, "Exclude: ", m.search_manage_exclude_input)
 
     if y <= max_y
-        set_string!(
-            buf,
-            x + 2,
-            y,
+        set_string!(buf, x + 2, y,
             "(comma-separated, relative to project root)",
-            tstyle(:text_dim),
-        )
+            tstyle(:text_dim); max_x=x+max_w)
         y += 1
     end
 
     # Auto-detect button
     y += 1
     if y <= max_y
-        detect_style = field == 3 ? tstyle(:accent, bold = true) : tstyle(:text_dim)
-        detect_cursor = field == 3 ? "▸ " : "  "
+        detect_style = field == 4 ? tstyle(:accent, bold = true) : tstyle(:text_dim)
+        detect_cursor = field == 4 ? "▸ " : "  "
         set_string!(buf, x, y, detect_cursor, detect_style)
         set_string!(buf, x + 2, y, "[ Auto-detect ]", detect_style)
 
@@ -425,10 +418,10 @@ function _render_config_fields(
     # Save / Cancel buttons
     y += 1
     if y <= max_y
-        save_style = field == 4 ? tstyle(:success, bold = true) : tstyle(:text_dim)
-        save_cursor = field == 4 ? "▸ " : "  "
-        cancel_style = field == 5 ? tstyle(:warning, bold = true) : tstyle(:text_dim)
-        cancel_cursor = field == 5 ? "▸ " : "  "
+        save_style = field == 5 ? tstyle(:success, bold = true) : tstyle(:text_dim)
+        save_cursor = field == 5 ? "▸ " : "  "
+        cancel_style = field == 6 ? tstyle(:warning, bold = true) : tstyle(:text_dim)
+        cancel_cursor = field == 6 ? "▸ " : "  "
 
         set_string!(buf, x, y, save_cursor, save_style)
         set_string!(buf, x + 2, y, "[ Save ]", save_style)

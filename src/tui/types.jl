@@ -389,6 +389,10 @@ const TAB_ADVANCED   = 9
     search_manage_config_field::Int = 1  # 1=dirs, 2=exts, 3=auto-detect, 4=save, 5=cancel
     search_manage_config_dirs::String = ""
     search_manage_config_exts::String = ""
+    search_manage_config_exclude::String = ""
+    search_manage_dirs_input::Any = nothing      # TextInput for dirs
+    search_manage_exts_input::Any = nothing      # TextInput for extensions
+    search_manage_exclude_input::Any = nothing   # TextInput for exclude dirs
     search_manage_config_path::String = ""   # project path being configured (add flow)
     search_manage_detected::@NamedTuple{
         type::String,
