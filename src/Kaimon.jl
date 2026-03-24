@@ -1827,6 +1827,7 @@ function start!(;
             security_config.port,
             security_config.created_at,
             security_config.editor,
+            security_config.qdrant_prefix,
         )
     end
 
@@ -2163,7 +2164,7 @@ function generate_key()
     new_key = generate_api_key()
     new_config = SecurityConfig(
         config.mode, vcat(config.api_keys, [new_key]), config.allowed_ips,
-        config.port, config.created_at, config.editor,
+        config.port, config.created_at, config.editor, config.qdrant_prefix,
     )
     if save_global_config(new_config)
         println("✅ Added new API key: $new_key")
@@ -2190,7 +2191,7 @@ function revoke_key(key::String)
     end
     new_config = SecurityConfig(
         config.mode, filter(k -> k != key, config.api_keys), config.allowed_ips,
-        config.port, config.created_at, config.editor,
+        config.port, config.created_at, config.editor, config.qdrant_prefix,
     )
     if save_global_config(new_config)
         println("✅ Removed API key")
@@ -2216,7 +2217,7 @@ function allow_ip(ip::String)
     end
     new_config = SecurityConfig(
         config.mode, config.api_keys, vcat(config.allowed_ips, [ip]),
-        config.port, config.created_at, config.editor,
+        config.port, config.created_at, config.editor, config.qdrant_prefix,
     )
     if save_global_config(new_config)
         println("✅ Added IP address to allowlist: $ip")
@@ -2242,7 +2243,7 @@ function deny_ip(ip::String)
     end
     new_config = SecurityConfig(
         config.mode, config.api_keys, filter(i -> i != ip, config.allowed_ips),
-        config.port, config.created_at, config.editor,
+        config.port, config.created_at, config.editor, config.qdrant_prefix,
     )
     if save_global_config(new_config)
         println("✅ Removed IP address from allowlist: $ip")
@@ -2267,7 +2268,7 @@ function set_security_mode(mode::Symbol)
     end
     new_config = SecurityConfig(
         mode, config.api_keys, config.allowed_ips,
-        config.port, config.created_at, config.editor,
+        config.port, config.created_at, config.editor, config.qdrant_prefix,
     )
     if save_global_config(new_config)
         println("✅ Changed security mode to: $mode")

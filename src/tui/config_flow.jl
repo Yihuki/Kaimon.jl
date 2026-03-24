@@ -426,9 +426,9 @@ function cycle_editor!(m::KaimonModel)
     # Persist to global config
     cfg = load_global_config()
     if cfg !== nothing
-        new_cfg = SecurityConfig(
+        new_cfg = KaimonConfig(
             cfg.mode, cfg.api_keys, cfg.allowed_ips, cfg.port,
-            cfg.created_at, m.editor,
+            cfg.created_at, m.editor, cfg.qdrant_prefix,
         )
         save_global_config(new_cfg)
     end
