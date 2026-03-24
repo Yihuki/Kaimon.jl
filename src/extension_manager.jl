@@ -616,13 +616,26 @@ end
 Stop all managed extension processes. Called from TUI cleanup.
 """
 function stop_all_extensions!()
-    lock(MANAGED_EXTENSIONS_LOCK) do
-        for ext in MANAGED_EXTENSIONS
-            try
-                stop_extension!(ext)
+    exts = lock(MANAGED_EXTENSIONS_LOCK) do
+        copy(MANAGED_EXTENSIONS)
+    end
+    isempty(exts) && return
+
+    # Send gate shutdown to all extensions in parallel so they can run
+    # their cleanup hooks concurrently (up to 5s each)
+    tasks = Task[]
+    for ext in exts
+        if ext.status in (:running, :starting)
+            push!(tasks, Threads.@spawn try
+                stop_extension!(ext; timeout=5.0)
             catch
-            end
+            end)
         end
+    end
+
+    # Wait for all to finish (bounded by the per-extension timeout)
+    for t in tasks
+        try; wait(t); catch; end
     end
 end
 
