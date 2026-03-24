@@ -62,11 +62,21 @@ b) If a long-running `ex()` call times out on the client side, how can you check
 
 ---
 
+## Question 7: Background Jobs (15 points)
+
+a) What happens automatically when an `ex()` call takes longer than 30 seconds?
+b) How do you check on a promoted job's progress? What information is available?
+c) How can running code report intermediate values to the agent? Give an example.
+d) How does cooperative cancellation work? What must the running code do?
+e) What happens to background jobs if the Kaimon TUI is restarted?
+
+---
+
 ## Grading Scale
 
-- **90-100**: Excellent! Ready to use Kaimon effectively.
-- **75-89**: Good. Review missed areas before starting.
-- **60-74**: Review `usage_instructions` and retake.
-- **Below 60**: Study `usage_instructions` carefully and retake.
+- **90-115**: Excellent! Ready to use Kaimon effectively.
+- **85-89**: Good. Review missed areas before starting.
+- **70-84**: Review `usage_instructions` and retake.
+- **Below 70**: Study `usage_instructions` carefully and retake.
 
 **Check answers:** `usage_quiz(show_sols=true)`

@@ -108,11 +108,37 @@ b) Use `check_eval(eval_id="XXXXXXXX")` with the eval ID. It returns the current
 
 ---
 
+## Question 7: Background Jobs (15 points)
+
+**Answers:**
+
+a) The eval is automatically **promoted to a background job**. The `ex` tool returns immediately with a job ID and instructions to use `check_eval` and `cancel_eval`. The computation continues running on the gate session. (3 pts)
+
+b) Call `check_eval(eval_id="XXXXXXXX")`. It returns: status (running/promoted/completed/failed/cancelled), elapsed time, code preview, the full result if completed, and any **stashed values** — intermediate data the running code has reported via `Gate.stash()`. (3 pts)
+
+c) The running code calls `Gate.stash(key, value)` to report intermediate values. These are published via PUB/SUB and visible through `check_eval`. Example: (3 pts)
+```julia
+for epoch in 1:100
+    loss = train_epoch!(model)
+    Gate.stash("epoch", epoch)
+    Gate.stash("loss", loss)
+    Gate.progress("Epoch $epoch: loss=$loss")
+end
+```
+
+d) Call `cancel_eval(eval_id="...")` which sends a cancellation signal to the gate session. The running code must **cooperatively check** `Gate.is_cancelled()` in its loop and `break` when it returns `true`. Julia cannot force-interrupt threads. (3 pts)
+
+e) Background jobs are **persisted to SQLite**. On TUI restart, Kaimon checks the database for `running` jobs and queries the gate sessions for cached results. If the gate still has the result cached, it's retrieved and stored. Jobs older than 1 hour with no session are marked as `lost`. (3 pts)
+
+**Grading:** 3 points per sub-question
+
+---
+
 ## Final Assessment
 
-**Total:** _____ / 100
+**Total:** _____ / 115
 
-- **90-100 — EXCELLENT:** Ready to work efficiently
-- **75-89 — GOOD:** Review missed areas before starting
-- **60-74 — REVIEW NEEDED:** Review `usage_instructions` and retake
-- **Below 60 — NEEDS STUDY:** Must score 75+ before working with users
+- **90-115 — EXCELLENT:** Ready to work efficiently
+- **85-89 — GOOD:** Review missed areas before starting
+- **70-84 — REVIEW NEEDED:** Review `usage_instructions` and retake
+- **Below 70 — NEEDS STUDY:** Must score 70+ before working with users
