@@ -146,12 +146,13 @@ Retrieve points from a collection with pagination.
 - `limit::Int`: Number of points to retrieve (default: 10)
 - `offset`: Offset for pagination (optional)
 """
-function scroll_points(collection::String; limit::Int = 10, offset = nothing)
+function scroll_points(collection::String; limit::Int = 10, offset = nothing, with_vector::Bool = false)
     try
-        body = Dict("limit" => limit, "with_payload" => true, "with_vector" => false)
+        body = Dict{String,Any}("limit" => limit, "with_payload" => true, "with_vector" => with_vector)
 
         if offset !== nothing
-            body["offset"] = offset
+            # Qdrant accepts both integer and UUID string offsets
+            body["offset"] = offset isa Integer ? offset : string(offset)
         end
 
         response = HTTP.post(

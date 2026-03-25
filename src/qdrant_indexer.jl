@@ -45,10 +45,12 @@ function _ensure_global_collection!()
         if gc_name ∉ existing
             # Use the same dimensions as the default embedding model
             cfg = get_embedding_config(DEFAULT_EMBEDDING_MODEL)
-            QdrantClient.create_collection(gc_name, cfg.dims)
+            QdrantClient.create_collection(gc_name; vector_size=cfg.dims)
         end
         _GLOBAL_COLLECTION_ENSURED[] = true
-    catch
+    catch e
+        @debug "Failed to ensure global collection" exception=e
+        _GLOBAL_COLLECTION_ENSURED[] = false
     end
 end
 
@@ -81,22 +83,14 @@ function populate_global_collection!(; verbose::Bool=true)
         # Validate this is a Kaimon-indexed collection by sampling a point
         # and checking for our schema fields. Skip foreign collections.
         is_kaimon = try
-            # Check vector dimensions match our embedding model
-            info = QdrantClient.collection_info(col)
-            col_dims = get(get(get(info, "config", Dict()), "params", Dict()), "size", 0)
-            expected_dims = get_embedding_config(DEFAULT_EMBEDDING_MODEL).dims
-            if col_dims != expected_dims
-                false
+            # Sample a point and check for Kaimon payload fields
+            sample = QdrantClient.scroll_points(col; limit=1)
+            points = get(sample, "points", [])
+            if !isempty(points)
+                payload = get(first(points), "payload", Dict())
+                haskey(payload, "file") && haskey(payload, "type") && haskey(payload, "text")
             else
-                # Sample a point and check for Kaimon payload fields
-                sample = QdrantClient.scroll(col; limit=1, with_vectors=false)
-                points = get(sample, "points", [])
-                if !isempty(points)
-                    payload = get(first(points), "payload", Dict())
-                    haskey(payload, "file") && haskey(payload, "type") && haskey(payload, "text")
-                else
-                    false
-                end
+                false
             end
         catch
             false
@@ -108,15 +102,28 @@ function populate_global_collection!(; verbose::Bool=true)
 
         verbose && print("  Copying $col... ")
         try
-            # Scroll through all points in the collection
+            # Scroll through all points in the collection with vectors
             offset = nothing
             col_count = 0
             while true
-                result = QdrantClient.scroll(col; limit=100, offset=offset, with_vectors=true)
+                result = QdrantClient.scroll_points(col; limit=100, offset=offset, with_vector=true)
                 points = get(result, "points", [])
                 isempty(points) && break
-                QdrantClient.upsert_points(gc_name, points)
-                col_count += length(points)
+                # Convert scroll result points to upsert format
+                upsert_batch = Dict[]
+                for pt in points
+                    id = get(pt, "id", nothing)
+                    vector = get(pt, "vector", nothing)
+                    payload = get(pt, "payload", Dict())
+                    (id === nothing || vector === nothing) && continue
+                    push!(upsert_batch, Dict(
+                        "id" => id,
+                        "vector" => vector,
+                        "payload" => payload,
+                    ))
+                end
+                !isempty(upsert_batch) && QdrantClient.upsert_points(gc_name, upsert_batch)
+                col_count += length(upsert_batch)
                 # Get next offset
                 next_offset = get(result, "next_page_offset", nothing)
                 next_offset === nothing && break
@@ -1635,10 +1642,12 @@ function reindex_file(
     !silent && verbose && println("  Re-indexing: $(basename(file_path))")
     with_index_logger(() -> @info "Re-indexing file" file = basename(file_path))
 
-    # Delete old chunks for this file
+    # Delete old chunks for this file from both project and global collections
     QdrantClient.delete_by_file(collection, file_path)
+    gc = global_collection_name()
+    try; QdrantClient.collection_exists(gc) && QdrantClient.delete_by_file(gc, file_path); catch; end
 
-    # Index fresh
+    # Index fresh (dual-writes to both collections)
     return index_file(file_path, collection; project_path=project_path, verbose=verbose, silent=silent)
 end
 
@@ -1799,6 +1808,15 @@ function index_project(
         with_index_logger(() -> @info "Recreating collection" collection = col_name model = DEFAULT_EMBEDDING_MODEL vector_size = vector_size)
         QdrantClient.delete_collection(col_name)
         QdrantClient.create_collection(col_name; vector_size=vector_size)
+        # Also purge this project's entries from the global collection
+        gc = global_collection_name()
+        try
+            if QdrantClient.collection_exists(gc)
+                QdrantClient.delete_by_filter(gc, Dict(
+                    "must" => [Dict("key" => "collection", "match" => Dict("value" => col_name))]
+                ))
+            end
+        catch; end
     else
         # Check if collection exists; create if it doesn't
         existing_collections = QdrantClient.list_collections()
@@ -1914,11 +1932,14 @@ function sync_index(
     deleted = 0
     total_chunks = 0
 
-    # Handle deleted files
+    # Handle deleted files (remove from both project and global collections)
+    gc = global_collection_name()
+    gc_exists = try; QdrantClient.collection_exists(gc); catch; false; end
     for file_path in deleted_files
         !silent && verbose && println("  Removing deleted: $(basename(file_path))")
         with_index_logger(() -> @info "Removing deleted file" file = basename(file_path))
         QdrantClient.delete_by_file(col_name, file_path)
+        gc_exists && try; QdrantClient.delete_by_file(gc, file_path); catch; end
         remove_indexed_file(project_path, file_path)
         deleted += 1
     end
