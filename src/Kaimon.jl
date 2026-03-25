@@ -1182,6 +1182,18 @@ end
 
 const GATE_MODE = Ref{Bool}(false)
 const GATE_CONN_MGR = Ref{Union{Nothing,ConnectionManager}}(nothing)
+const _LAST_SESSION_KEY = Ref{String}("")  # last session used by ex/tools — for default collection resolution
+
+"""Get the project path of the last session the agent interacted with."""
+function _last_session_project_path()
+    key = _LAST_SESSION_KEY[]
+    isempty(key) && return ""
+    mgr = GATE_CONN_MGR[]
+    mgr === nothing && return ""
+    conn = get_connection_by_key(mgr, key)
+    conn === nothing && return ""
+    return conn.project_path
+end
 const TUI_MODEL = Ref{Any}(nothing)
 const TUI_LAST_FRAME = Ref{String}("")
 
@@ -1225,6 +1237,9 @@ function _resolve_gate_conn(session::String)
         end
         return (nothing, "ERROR: No session matched '$(session)'. Available: $available")
     end
+
+    # Track last used session for default collection resolution
+    _LAST_SESSION_KEY[] = short_key(conn)
 
     # Stalled sessions: return a status message instead of letting tools timeout
     if conn.status == :stalled

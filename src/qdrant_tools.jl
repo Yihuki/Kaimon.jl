@@ -340,7 +340,7 @@ qdrant_collection_info_tool = @mcp_tool(
 
 qdrant_search_code_tool = @mcp_tool(
     :qdrant_search_code,
-    "Semantic search over indexed codebase using natural language queries. Finds relevant code snippets based on meaning, not just keywords.",
+    "Semantic search over indexed codebase using natural language queries. Finds relevant code snippets based on meaning, not just keywords. Defaults to the last-used session's project collection.",
     Dict(
         "type" => "object",
         "properties" => Dict(
@@ -350,7 +350,11 @@ qdrant_search_code_tool = @mcp_tool(
             ),
             "collection" => Dict(
                 "type" => "string",
-                "description" => "Collection name to search (optional, defaults to current project's collection)",
+                "description" => "Collection name to search (optional, defaults to last-used session's project)",
+            ),
+            "cross_project" => Dict(
+                "type" => "boolean",
+                "description" => "Search across ALL indexed projects at once (default: false). Ignores 'collection' when true.",
             ),
             "limit" => Dict(
                 "type" => "integer",
@@ -381,15 +385,29 @@ qdrant_search_code_tool = @mcp_tool(
             return "Error: query is required"
         end
 
-        # Resolve collection name (normalize + fuzzy match)
-        raw_collection = get(args, "collection", nothing)
-        if raw_collection isa String && isempty(raw_collection)
-            raw_collection = nothing
+        # Resolve collection — cross_project uses the global collection
+        cross_project = let v = get(args, "cross_project", false)
+            v isa Bool ? v : v == "true" || v == true
         end
+
         collections = QdrantClient.list_collections()
-        collection, col_err = _resolve_collection(raw_collection, collections)
-        if col_err !== nothing
-            return "Error: $col_err"
+
+        collection = if cross_project
+            gc = global_collection_name()
+            if gc ∉ collections
+                return "Error: Cross-project collection '$gc' not found. Index at least one project first."
+            end
+            gc
+        else
+            raw_collection = get(args, "collection", nothing)
+            if raw_collection isa String && isempty(raw_collection)
+                raw_collection = nothing
+            end
+            col, col_err = _resolve_collection(raw_collection, collections)
+            if col_err !== nothing
+                return "Error: $col_err"
+            end
+            col
         end
 
         # Get embedding for query

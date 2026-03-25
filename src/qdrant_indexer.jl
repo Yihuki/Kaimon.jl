@@ -29,6 +29,40 @@ Return the current Qdrant collection prefix (empty string if none).
 """
 get_collection_prefix() = _QDRANT_COLLECTION_PREFIX[]
 
+"""Name of the global cross-project collection."""
+function global_collection_name()
+    _prefixed("kaimon_all")
+end
+
+const _GLOBAL_COLLECTION_ENSURED = Ref{Bool}(false)
+
+"""Ensure the global cross-project collection exists, creating it if needed."""
+function _ensure_global_collection!()
+    _GLOBAL_COLLECTION_ENSURED[] && return
+    gc_name = global_collection_name()
+    try
+        existing = QdrantClient.list_collections()
+        if gc_name ∉ existing
+            # Use the same dimensions as the default embedding model
+            cfg = get_embedding_config(DEFAULT_EMBEDDING_MODEL)
+            QdrantClient.create_collection(gc_name, cfg.dims)
+        end
+        _GLOBAL_COLLECTION_ENSURED[] = true
+    catch
+    end
+end
+
+"""Upsert points to the global cross-project collection (best-effort)."""
+function _upsert_to_global!(points::Vector{Dict})
+    isempty(points) && return
+    try
+        _ensure_global_collection!()
+        QdrantClient.upsert_points(global_collection_name(), points)
+    catch
+        # Don't fail the primary index if global write fails
+    end
+end
+
 """Apply the collection prefix to a name, if configured."""
 function _prefixed(name::String)
     prefix = _QDRANT_COLLECTION_PREFIX[]
@@ -775,9 +809,14 @@ end
 Resolve a collection name (possibly user-provided) against available collections.
 Returns `(resolved_name, error_message)`. If error_message is nothing, the name is valid.
 """
-function _resolve_collection(name::Union{String,Nothing}, available::Vector{String}; project_path::String=pwd())
+function _resolve_collection(name::Union{String,Nothing}, available::Vector{String}; project_path::String="")
     # Default to project collection if not specified
     if name === nothing || isempty(name)
+        # Try last session's project path, fall back to pwd()
+        if isempty(project_path)
+            lsp = try; parentmodule(@__MODULE__)._last_session_project_path(); catch; ""; end
+            project_path = !isempty(lsp) ? lsp : pwd()
+        end
         name = get_project_collection_name(project_path)
     end
 
@@ -1472,6 +1511,7 @@ function index_file(
                 # Batch upsert every 10 points
                 if length(points) >= 10
                     QdrantClient.upsert_points(collection, points)
+                    _upsert_to_global!(points)
                     points = Dict[]
                 end
             end
@@ -1480,6 +1520,7 @@ function index_file(
         # Upsert remaining points
         if !isempty(points)
             QdrantClient.upsert_points(collection, points)
+            _upsert_to_global!(points)
         end
 
         # Record in index state for change tracking
