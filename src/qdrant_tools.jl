@@ -476,8 +476,20 @@ qdrant_search_code_tool = @mcp_tool(
             is_mutable = get(payload, "is_mutable", false)
 
             # Use relative path if possible
-            if !isempty(file) && startswith(file, pwd())
-                file = relpath(file, pwd())
+            proj_path = get(payload, "project_path", "")
+            if !isempty(file)
+                if !isempty(proj_path) && startswith(file, proj_path)
+                    file = relpath(file, proj_path)
+                elseif startswith(file, pwd())
+                    file = relpath(file, pwd())
+                end
+            end
+
+            # For cross-project search, prefix with project name
+            proj_label = if cross_project && !isempty(proj_path)
+                basename(proj_path)
+            else
+                ""
             end
 
             # Compact format: [score] name @ file:L10-20 (type)
@@ -490,6 +502,7 @@ qdrant_search_code_tool = @mcp_tool(
                 output *= "$name @ "
             end
 
+            !isempty(proj_label) && (output *= "$proj_label/")
             output *= "$file:L$start_line"
             output *= start_line != end_line ? "-$end_line" : ""
 
