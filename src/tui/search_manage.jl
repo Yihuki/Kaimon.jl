@@ -287,7 +287,17 @@ function _handle_add_config_edit!(m::KaimonModel, evt::KeyEvent)
     field = m.search_manage_config_field
 
     n_fields = 6  # dirs, exts, exclude, auto-detect, save, cancel
-    if evt.key == :tab || evt.key == :down
+
+    # Tab completes directory paths on dirs/exclude fields, cycles on others
+    if evt.key == :tab
+        if field in (1, 3) && !isempty(m.search_manage_config_path)
+            input = field == 1 ? m.search_manage_dirs_input : m.search_manage_exclude_input
+            input !== nothing && _complete_relative_dir!(input, m.search_manage_config_path)
+            return
+        end
+        m.search_manage_config_field = field >= n_fields ? 1 : field + 1
+        return
+    elseif evt.key == :down
         m.search_manage_config_field = field >= n_fields ? 1 : field + 1
         return
     elseif evt.key == :up
@@ -431,33 +441,51 @@ function _handle_search_manage_configure!(m::KaimonModel, evt::KeyEvent)
     entry === nothing && return
 
     field = m.search_manage_config_field
+    n_fields = 6  # dirs, exts, exclude, auto-detect, save, cancel
 
-    if evt.key == :tab || evt.key == :down
-        m.search_manage_config_field = field >= 5 ? 1 : field + 1
+    if evt.key == :tab
+        if field in (1, 3) && entry !== nothing
+            input = field == 1 ? m.search_manage_dirs_input : m.search_manage_exclude_input
+            input !== nothing && _complete_relative_dir!(input, entry.project_path)
+            return
+        end
+        m.search_manage_config_field = field >= n_fields ? 1 : field + 1
+        return
+    elseif evt.key == :down
+        m.search_manage_config_field = field >= n_fields ? 1 : field + 1
         return
     elseif evt.key == :up
-        m.search_manage_config_field = field <= 1 ? 5 : field - 1
+        m.search_manage_config_field = field <= 1 ? n_fields : field - 1
         return
     end
 
     if evt.key == :enter
-        if field == 5
+        if field == n_fields
             # Cancel button
             m.search_manage_configuring = false
             return
         end
-        if field == 3
+        if field == 4
             # Auto-detect button
             detected = auto_detect_project_config(entry.project_path)
             m.search_manage_detected = detected
-            m.search_manage_config_dirs =
-                join([_make_relative(d, entry.project_path) for d in detected.dirs], ", ")
-            m.search_manage_config_exts = join(detected.extensions, ", ")
+            dirs_str = join([_make_relative(d, entry.project_path) for d in detected.dirs], ", ")
+            exts_str = join(detected.extensions, ", ")
+            m.search_manage_config_dirs = dirs_str
+            m.search_manage_config_exts = exts_str
+            m.search_manage_dirs_input !== nothing && set_text!(m.search_manage_dirs_input, dirs_str)
+            m.search_manage_exts_input !== nothing && set_text!(m.search_manage_exts_input, exts_str)
             return
         end
-        # Save (fields 1, 2, or 4)
+        # Save (field 5)
+        if field == 5
+            m.search_manage_dirs_input !== nothing && (m.search_manage_config_dirs = Tachikoma.text(m.search_manage_dirs_input))
+            m.search_manage_exts_input !== nothing && (m.search_manage_config_exts = Tachikoma.text(m.search_manage_exts_input))
+            m.search_manage_exclude_input !== nothing && (m.search_manage_config_exclude = Tachikoma.text(m.search_manage_exclude_input))
+        end
         dirs_raw = filter(!isempty, strip.(split(m.search_manage_config_dirs, ",")))
         exts_raw = filter(!isempty, strip.(split(m.search_manage_config_exts, ",")))
+        exclude_raw = filter(!isempty, strip.(split(m.search_manage_config_exclude, ",")))
 
         abs_dirs = String[]
         for d in dirs_raw
@@ -473,6 +501,7 @@ function _handle_search_manage_configure!(m::KaimonModel, evt::KeyEvent)
             collection = entry.collection,
             dirs = abs_dirs,
             extensions = Vector{String}(exts_raw),
+            exclude_dirs = Vector{String}(exclude_raw),
             source = existing_source,
         )
 

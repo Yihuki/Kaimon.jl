@@ -737,6 +737,81 @@ function _complete_path!(input::TextInput)
     end
 end
 
+"""
+    _complete_relative_dir!(input::TextInput, project_root::String)
+
+Tab-complete directory names relative to `project_root` within a comma-separated
+TextInput. Completes the last entry (after the last comma). Only suggests
+directories, not files.
+"""
+function _complete_relative_dir!(input::TextInput, project_root::String)
+    isempty(project_root) && return
+    text = Tachikoma.text(input)
+
+    # Find the last comma-separated entry to complete
+    last_comma = findlast(',', text)
+    prefix_before = last_comma !== nothing ? text[1:last_comma] * " " : ""
+    partial = last_comma !== nothing ? strip(text[last_comma+1:end]) : strip(text)
+
+    # Resolve relative to project root
+    if isempty(partial)
+        search_dir = project_root
+        search_prefix = ""
+    else
+        # Could be a partial path like "src/co" → dir="src", prefix="co"
+        full = joinpath(project_root, partial)
+        if isdir(full)
+            search_dir = full
+            search_prefix = ""
+            # Add trailing / to partial for display
+            partial = endswith(partial, '/') ? partial : partial * "/"
+        else
+            search_dir = joinpath(project_root, dirname(partial))
+            search_prefix = basename(partial)
+        end
+    end
+
+    isdir(search_dir) || return
+
+    entries = try
+        filter(readdir(search_dir)) do name
+            startswith(name, search_prefix) &&
+            !startswith(name, ".") &&
+            isdir(joinpath(search_dir, name))
+        end
+    catch
+        return
+    end
+
+    if length(entries) == 1
+        rel = if isempty(partial) || endswith(partial, '/')
+            partial * entries[1]
+        else
+            joinpath(dirname(partial), entries[1])
+        end
+        Tachikoma.set_text!(input, prefix_before * rel)
+    elseif length(entries) > 1
+        # Complete common prefix
+        common = entries[1]
+        for e in entries[2:end]
+            i = 0
+            for (a, b) in zip(common, e)
+                a == b || break
+                i += 1
+            end
+            common = common[1:i]
+        end
+        if length(common) > length(search_prefix)
+            rel = if isempty(partial) || endswith(partial, '/')
+                partial * common
+            else
+                joinpath(dirname(partial), common)
+            end
+            Tachikoma.set_text!(input, prefix_before * rel)
+        end
+    end
+end
+
 """KiloCode settings directory inside VS Code's globalStorage."""
 function _kilo_settings_dir()
     gs = if Sys.isapple()
