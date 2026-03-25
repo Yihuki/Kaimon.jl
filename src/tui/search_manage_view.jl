@@ -19,7 +19,7 @@ function _view_search_manage(m::KaimonModel, area::Rect, buf::Buffer)
     end
 
     h = min(n + 6 + bottom_h, area.height - 2)
-    w = min(68, area.width - 4)
+    w = min(round(Int, area.width * 0.85), area.width - 4)
     rect = center(area, w, h)
 
     border_s = tstyle(:accent, bold = true)

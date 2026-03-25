@@ -5,7 +5,7 @@ function _view_search_config(m::KaimonModel, area::Rect, buf::Buffer)
     n_models = length(m.search_config_models)
     # Layout: 2 border + 1 header + n_models + 1 blank + 4 col_info + 1 blank + 1 results + 1 blank + 2 hint + 1 confirm
     h = min(n_models + 15, area.height - 2)
-    w = min(52, area.width - 4)
+    w = min(round(Int, area.width * 0.8), area.width - 4)
     rect = center(area, w, h)
 
     border_s = tstyle(:accent, bold = true)
@@ -229,7 +229,7 @@ function _view_collection_detail(m::KaimonModel, area::Rect, buf::Buffer)
     end
 
     h = min(18, area.height - 2)
-    w = min(60, area.width - 4)
+    w = min(round(Int, area.width * 0.8), area.width - 4)
     rect = center(area, w, h)
 
     border_s = tstyle(:accent, bold = true)
