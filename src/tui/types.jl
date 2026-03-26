@@ -337,7 +337,7 @@ const TAB_ADVANCED   = 9
     search_collection_delete_confirm::Bool = false  # confirm delete in picker
     search_chunk_type::String = "all"       # "all" / "definitions" / "windows"
     search_result_count::Int = 10
-    search_embedding_model::String = "qwen3-embedding:0.6b"
+    search_embedding_model::String = DEFAULT_EMBEDDING_MODEL
 
     # ── Search config panel ──
     search_config_open::Bool = false
@@ -346,6 +346,8 @@ const TAB_ADVANCED   = 9
     search_config_models::Vector{
         @NamedTuple{name::String, dims::Int, ctx::Int, installed::Bool}
     } = @NamedTuple{name::String, dims::Int, ctx::Int, installed::Bool}[]
+    search_config_custom_input::Any = nothing            # TextInput for custom model name
+    search_config_custom_editing::Bool = false          # true when editing custom model field
     search_config_col_info::Dict = Dict()              # cached collection_info result
     search_config_reindex_paths::Vector{Pair{String,String}} = Pair{String,String}[]  # project_path => collection pairs to reindex
     search_dimension_mismatch::Bool = false             # auto-detected dimension mismatch

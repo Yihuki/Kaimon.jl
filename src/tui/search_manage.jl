@@ -260,7 +260,7 @@ function _handle_add_path_input!(m::KaimonModel, evt::KeyEvent)
         if !isdir(path)
             return
         end
-        path = abspath(path)
+        path = String(rstrip(abspath(path), '/'))
 
         # Auto-detect project config and transition to phase 2 with editable fields
         detected = auto_detect_project_config(path)
@@ -306,6 +306,11 @@ function _handle_add_config_edit!(m::KaimonModel, evt::KeyEvent)
     end
 
     if evt.key == :enter
+        if field in (1, 2, 3)
+            # Text fields: advance to next field
+            m.search_manage_config_field = field + 1
+            return
+        end
         if field == n_fields
             # Cancel button
             m.search_manage_add_phase = 1
@@ -327,7 +332,7 @@ function _handle_add_config_edit!(m::KaimonModel, evt::KeyEvent)
             end
             return
         end
-        # Save (field 5)
+        # Save (field 5) — sync TextInputs first
         if field == 5
             # Sync TextInput values back to strings
             m.search_manage_dirs_input !== nothing && (m.search_manage_config_dirs = Tachikoma.text(m.search_manage_dirs_input))
@@ -335,6 +340,9 @@ function _handle_add_config_edit!(m::KaimonModel, evt::KeyEvent)
             m.search_manage_exclude_input !== nothing && (m.search_manage_config_exclude = Tachikoma.text(m.search_manage_exclude_input))
         end
         path = m.search_manage_config_path
+        if isempty(path)
+            return  # guard: don't save with empty path
+        end
         dirs_raw = filter(!isempty, strip.(split(m.search_manage_config_dirs, ",")))
         exts_raw = filter(!isempty, strip.(split(m.search_manage_config_exts, ",")))
         exclude_raw = filter(!isempty, strip.(split(m.search_manage_config_exclude, ",")))
@@ -460,6 +468,10 @@ function _handle_search_manage_configure!(m::KaimonModel, evt::KeyEvent)
     end
 
     if evt.key == :enter
+        if field in (1, 2, 3)
+            m.search_manage_config_field = field + 1
+            return
+        end
         if field == n_fields
             # Cancel button
             m.search_manage_configuring = false

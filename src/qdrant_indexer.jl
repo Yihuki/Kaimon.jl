@@ -158,8 +158,8 @@ function _extract_pdf_text end
 
 # Embedding model configuration
 const EMBEDDING_CONFIGS = Dict(
+    "embeddinggemma:latest" => (dims=768, context_tokens=2048, context_chars=4000),
     "qwen3-embedding:0.6b" => (dims=1024, context_tokens=8192, context_chars=16000),
-    "qwen3-embedding" => (dims=4096, context_tokens=8192, context_chars=16000),
     "qwen3-embedding:4b" => (dims=2560, context_tokens=8192, context_chars=16000),
     "qwen3-embedding:8b" => (dims=4096, context_tokens=8192, context_chars=16000),
     "snowflake-arctic-embed:latest" => (dims=1024, context_tokens=512, context_chars=1000),
@@ -1486,6 +1486,7 @@ function index_file(
     project_path::String=pwd(),
     verbose::Bool=true,
     silent::Bool=false,
+    embedding_model::String=DEFAULT_EMBEDDING_MODEL,
 )
     if !isfile(file_path)
         msg = "File not found: $file_path"
@@ -1536,7 +1537,7 @@ function index_file(
         points = Dict[]
 
         # Get embedding config for size limits
-        embedding_config = get_embedding_config(DEFAULT_EMBEDDING_MODEL)
+        embedding_config = get_embedding_config(embedding_model)
         max_length = embedding_config.context_chars
 
         for (i, chunk) in enumerate(chunks)
@@ -1546,7 +1547,7 @@ function index_file(
             end
 
             # Use split-and-retry strategy for oversized chunks or embedding failures
-            embedded_chunks = split_chunk_recursive(chunk, max_length, DEFAULT_EMBEDDING_MODEL)
+            embedded_chunks = split_chunk_recursive(chunk, max_length, embedding_model)
 
             if isempty(embedded_chunks)
                 with_index_logger(() -> @warn "Failed to embed chunk after splitting" file = file_path chunk = i start_line = chunk["start_line"] end_line = chunk["end_line"])
@@ -1637,6 +1638,7 @@ function reindex_file(
     project_path::String=pwd(),
     verbose::Bool=true,
     silent::Bool=false,
+    embedding_model::String=DEFAULT_EMBEDDING_MODEL,
 )
     collection = normalize_collection_name(collection)
     !silent && verbose && println("  Re-indexing: $(basename(file_path))")
@@ -1648,7 +1650,7 @@ function reindex_file(
     try; QdrantClient.collection_exists(gc) && QdrantClient.delete_by_file(gc, file_path); catch; end
 
     # Index fresh (dual-writes to both collections)
-    return index_file(file_path, collection; project_path=project_path, verbose=verbose, silent=silent)
+    return index_file(file_path, collection; project_path=project_path, verbose=verbose, silent=silent, embedding_model=embedding_model)
 end
 
 """
@@ -1666,6 +1668,7 @@ function index_directory(
     exclude_dirs::Vector{String}=String[],
     verbose::Bool=true,
     silent::Bool=false,
+    embedding_model::String=DEFAULT_EMBEDDING_MODEL,
 )
     total_chunks = 0
     isdir(dir_path) || return total_chunks
@@ -1700,6 +1703,7 @@ function index_directory(
             project_path=project_path,
             verbose=verbose,
             silent=silent,
+            embedding_model=embedding_model,
         )
         total_chunks += chunks
     end
@@ -1737,6 +1741,7 @@ function index_project(
     extra_dirs::Vector{String}=String[],
     extensions::Union{Vector{String},Nothing}=nothing,
     source::String="manual",
+    embedding_model::String=DEFAULT_EMBEDDING_MODEL,
 )
     # Use project name as collection if not specified; always normalize
     col_name = collection === nothing ? get_project_collection_name(project_path) : normalize_collection_name(collection)
@@ -1800,12 +1805,12 @@ function index_project(
     end
 
     # Get vector size for the embedding model
-    embedding_config = get_embedding_config(DEFAULT_EMBEDDING_MODEL)
+    embedding_config = get_embedding_config(embedding_model)
     vector_size = embedding_config.dims
 
     if recreate
-        !silent && println("Recreating collection '$col_name' (model: $DEFAULT_EMBEDDING_MODEL, dims: $vector_size)...")
-        with_index_logger(() -> @info "Recreating collection" collection = col_name model = DEFAULT_EMBEDDING_MODEL vector_size = vector_size)
+        !silent && println("Recreating collection '$col_name' (model: $embedding_model, dims: $vector_size)...")
+        with_index_logger(() -> @info "Recreating collection" collection = col_name model = embedding_model vector_size = vector_size)
         QdrantClient.delete_collection(col_name)
         QdrantClient.create_collection(col_name; vector_size=vector_size)
         # Also purge this project's entries from the global collection
@@ -1821,8 +1826,8 @@ function index_project(
         # Check if collection exists; create if it doesn't
         existing_collections = QdrantClient.list_collections()
         if !(col_name in existing_collections)
-            !silent && println("Creating collection '$col_name' (model: $DEFAULT_EMBEDDING_MODEL, dims: $vector_size)...")
-            with_index_logger(() -> @info "Creating collection" collection = col_name model = DEFAULT_EMBEDDING_MODEL vector_size = vector_size)
+            !silent && println("Creating collection '$col_name' (model: $embedding_model, dims: $vector_size)...")
+            with_index_logger(() -> @info "Creating collection" collection = col_name model = embedding_model vector_size = vector_size)
             QdrantClient.create_collection(col_name; vector_size=vector_size)
         end
     end
@@ -1847,7 +1852,7 @@ function index_project(
     total_chunks = 0
     for dir in dirs_to_index
         chunks = index_directory(dir, col_name; project_path=project_path, silent=silent,
-            extensions=actual_extensions, exclude_dirs=config_exclude_dirs)
+            extensions=actual_extensions, exclude_dirs=config_exclude_dirs, embedding_model=embedding_model)
         total_chunks += chunks
     end
 

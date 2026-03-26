@@ -48,26 +48,45 @@ function _view_search_config(m::KaimonModel, area::Rect, buf::Buffer)
     for (i, entry) in enumerate(m.search_config_models)
         y > max_y - 6 && break
         is_selected = i == m.search_config_selected
-        is_active = entry.name == m.search_embedding_model
+        is_active = entry.name == m.search_embedding_model ||
+            (entry.name == "Custom..." && !haskey(EMBEDDING_CONFIGS, m.search_embedding_model) && !isempty(m.search_embedding_model))
 
         marker = is_selected ? "▸ " : "  "
         name_style = is_selected ? tstyle(:accent, bold = true) : tstyle(:text)
-        dim_str = "  $(entry.dims)d"
-        installed_indicator = entry.installed ? " ●" : " ○"
-        installed_style = entry.installed ? tstyle(:success) : tstyle(:text_dim)
-        active_str = is_active ? "  active" : ""
-        active_style = tstyle(:accent, bold = true)
 
-        set_string!(buf, x, y, marker, name_style)
-        cx = x + length(marker)
-        set_string!(buf, cx, y, entry.name, name_style)
-        cx += length(entry.name)
-        set_string!(buf, cx, y, dim_str, tstyle(:text_dim))
-        cx += length(dim_str)
-        set_string!(buf, cx, y, installed_indicator, installed_style)
-        cx += length(installed_indicator)
-        if is_active
-            set_string!(buf, cx, y, active_str, active_style)
+        set_string!(buf, x, y, marker, name_style; max_x=right(inner))
+
+        if entry.name == "Custom..."
+            # Show custom model entry with TextInput when editing
+            cx = x + length(marker)
+            if m.search_config_custom_editing && is_selected
+                m.search_config_custom_input.tick = m.tick
+                m.search_config_custom_input.focused = true
+                render(m.search_config_custom_input, Rect(cx, y, inner.width - cx + inner.x, 1), buf)
+            else
+                label = "Custom..."
+                if is_active
+                    label = "Custom: $(m.search_embedding_model)"
+                end
+                set_string!(buf, cx, y, label, name_style; max_x=right(inner))
+                if is_active
+                    set_string!(buf, cx + length(label) + 1, y, "  active", tstyle(:accent, bold=true); max_x=right(inner))
+                end
+            end
+        else
+            cx = x + length(marker)
+            set_string!(buf, cx, y, entry.name, name_style; max_x=right(inner))
+            cx += length(entry.name)
+            dim_str = "  $(entry.dims)d"
+            set_string!(buf, cx, y, dim_str, tstyle(:text_dim); max_x=right(inner))
+            cx += length(dim_str)
+            installed_indicator = entry.installed ? " ●" : " ○"
+            installed_style = entry.installed ? tstyle(:success) : tstyle(:text_dim)
+            set_string!(buf, cx, y, installed_indicator, installed_style; max_x=right(inner))
+            cx += length(installed_indicator)
+            if is_active
+                set_string!(buf, cx, y, "  active", tstyle(:accent, bold=true); max_x=right(inner))
+            end
         end
         y += 1
     end
