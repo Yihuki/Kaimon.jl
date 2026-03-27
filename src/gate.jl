@@ -1395,6 +1395,7 @@ function _base_julia_args()::Vector{String}
     # positional script argument on restart.
     _VALUE_FLAGS = Set(["-t", "--threads", "-C", "--cpu-target",
                         "-J", "--sysimage", "-O", "--optimize",
+                        "-L", "--load",
                         "--gcthreads", "--heap-size-hint"])
 
     result = [orig[1]]   # preserve exact Julia binary path
