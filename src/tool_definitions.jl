@@ -2344,6 +2344,12 @@ and `tool_args` directly for a custom gate tool call.
 
 # ── Eval Tracking ────────────────────────────────────────────────────────────
 
+function _fmt_elapsed(secs::Float64)
+    secs < 1.0 ? "$(round(Int, secs * 1000))ms" :
+    secs < 60.0 ? "$(round(secs; digits=1))s" :
+    "$(round(Int, secs ÷ 60))m $(round(Int, secs % 60))s"
+end
+
 check_eval_tool = @mcp_tool(
     :check_eval,
     """Check the status of a previous ex() evaluation by its eval ID.
@@ -2370,15 +2376,13 @@ The eval ID is delivered as a structured JSON field in two places:
         isempty(eval_id) && return "Error: eval_id is required."
 
         mgr = GATE_CONN_MGR[]
-        mgr === nothing && return "No gate connection manager active."
+        mgr === nothing && return "No connection manager."
 
         record = lock(mgr.eval_history_lock) do
             for r in reverse(mgr.eval_history)
-                if startswith(r.eval_id, eval_id)
-                    return r
-                end
+                startswith(r.eval_id, eval_id) && return r
             end
-            return nothing
+            nothing
         end
 
         # Fall back to database for jobs from previous sessions
@@ -2391,63 +2395,37 @@ The eval ID is delivered as a structured JSON field in two places:
                 result_preview = get(db_job, "result_preview", "")
                 started = get(db_job, "started_at", 0.0)
                 finished = get(db_job, "finished_at", 0.0)
-                elapsed_str = if finished > 0.0
-                    elapsed = finished - started
-                    elapsed < 60.0 ? "$(round(elapsed; digits=1))s" : "$(round(Int, elapsed ÷ 60))m $(round(Int, elapsed % 60))s"
-                else
-                    elapsed = time() - started
-                    "$(round(elapsed; digits=1))s (still running)"
-                end
-                code_preview = length(code) > 80 ? first(code, 80) * "..." : code
-                out = "Eval $eval_id (from database)\nStatus: $status\nCode: $code_preview\nElapsed: $elapsed_str"
-                if !isempty(result)
-                    out *= "\n\nFull result:\n$result"
-                elseif !isempty(result_preview)
-                    out *= "\n\nResult preview:\n$result_preview"
-                end
+                elapsed_str = _fmt_elapsed(finished > 0 ? finished - started : time() - started)
+                out = "$eval_id $status $(elapsed_str)\n$(first(code, 80))"
+                !isempty(result) && (out *= "\n\n$result")
+                !isempty(result) || !isempty(result_preview) && (out *= "\n\n$result_preview")
                 return out
             end
         end
 
-        record === nothing && return "No eval found matching '$eval_id'. History keeps the last $(_EVAL_HISTORY_MAX) evaluations."
+        record === nothing && return "No eval matching '$eval_id'."
 
-        elapsed = if record.finished_at > 0
-            record.finished_at - record.started_at
-        else
-            time() - record.started_at
-        end
-        elapsed_str = if elapsed < 1.0
-            "$(round(Int, elapsed * 1000))ms"
-        elseif elapsed < 60.0
-            "$(round(elapsed; digits=1))s"
-        else
-            "$(round(Int, elapsed ÷ 60))m $(round(Int, elapsed % 60))s"
-        end
-
-        code_preview = length(record.code) > 80 ? first(record.code, 80) * "..." : record.code
-
+        elapsed = record.finished_at > 0 ? record.finished_at - record.started_at : time() - record.started_at
         display_status = record.status == :promoted ? :running : record.status
-        status_str = "Eval $(record.eval_id) on session $(record.session_key)\n" *
-                     "Status: $(display_status)\n" *
-                     "Code: $code_preview\n" *
-                     "Elapsed: $elapsed_str"
+        code_preview = first(record.code, 80) * (length(record.code) > 80 ? "..." : "")
 
-        # For promoted jobs that completed, return the full result
-        if record.promoted && record.status in (:completed, :failed) && !isempty(record.full_result)
-            status_str *= "\n\nFull result:\n$(record.full_result)"
-        elseif !isempty(record.result_preview)
-            status_str *= "\n\nResult preview:\n$(record.result_preview)"
-        end
+        parts = ["$(record.eval_id) on $(record.session_key)",
+                 "$(display_status), $(_fmt_elapsed(elapsed))"]
 
-        # Include stashed values collected from the gate via PUB/SUB
+        # Stash summary (compact: key=value pairs on one line)
         if !isempty(record.stash)
-            status_str *= "\n\nStashed values:"
-            for (k, v) in sort(collect(record.stash); by=first)
-                status_str *= "\n  $k = $v"
-            end
+            stash_parts = ["$(k)=$(v)" for (k, v) in sort(collect(record.stash); by=first)]
+            push!(parts, join(stash_parts, ", "))
         end
 
-        status_str
+        # Result — only for completed/failed jobs
+        if record.promoted && record.status in (:completed, :failed) && !isempty(record.full_result)
+            push!(parts, record.full_result)
+        elseif !isempty(record.result_preview)
+            push!(parts, record.result_preview)
+        end
+
+        join(parts, "\n")
     end
 )
 
