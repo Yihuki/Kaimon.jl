@@ -1509,7 +1509,7 @@ function execute_via_gate_streaming(
         dname = isempty(conn.display_name) ? conn.name : conn.display_name
         code_preview = length(code) > 60 ? first(code, 60) * "..." : code
         job_inflight_id = _push_inflight_start!("⏳ job:$eval_id", code_preview, short_key(conn))
-        _push_inflight_progress!(job_inflight_id, "promoted — running in background")
+        _push_inflight_progress!(job_inflight_id, "running in background")
         _register_job_inflight!(eval_id, job_inflight_id)
 
         # Background task to collect the result when it completes
@@ -1574,7 +1574,7 @@ function execute_via_gate_streaming(
                "Session: $(isempty(conn.display_name) ? conn.name : conn.display_name)\n" *
                "Code: $(first(code, 80))$(length(code) > 80 ? "..." : "")\n\n" *
                "Use `check_eval(eval_id=\"$eval_id\")` to check status and retrieve the result.\n" *
-               "Use `cancel_eval(eval_id=\"$eval_id\")` to cancel if stuck."
+               "Use `cancel_eval(eval_id=\"$eval_id\")` to cancel if needed."
     end
 
     # Eval completed within threshold — normal path

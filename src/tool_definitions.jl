@@ -2426,8 +2426,9 @@ The eval ID is delivered as a structured JSON field in two places:
 
         code_preview = length(record.code) > 80 ? first(record.code, 80) * "..." : record.code
 
+        display_status = record.status == :promoted ? :running : record.status
         status_str = "Eval $(record.eval_id) on session $(record.session_key)\n" *
-                     "Status: $(record.status)\n" *
+                     "Status: $(display_status)\n" *
                      "Code: $code_preview\n" *
                      "Elapsed: $elapsed_str"
 

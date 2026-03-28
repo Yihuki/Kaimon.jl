@@ -1122,14 +1122,14 @@ function eval_remote_async(
     conn.eval_state[] = EVAL_STREAMING
 
     start_time = time()
-    last_activity = start_time  # tracks last stdout/stderr/any message
+    last_activity = start_time  # tracks last message of any kind (stdout, stash, etc.)
     silence_threshold = 60.0    # send keepalive after this much silence
     keepalive_interval = 30.0   # seconds between repeated keepalives
     last_keepalive = 0.0
-    hard_timeout = timeout_ms / 1000.0  # safety valve
+    inactivity_timeout = timeout_ms / 1000.0  # fail only after this much silence
 
     try
-        while (time() - start_time) < hard_timeout
+        while (time() - last_activity) < inactivity_timeout
             silence = time() - last_activity
 
             # If no output for a while, send periodic keepalive progress
@@ -1174,8 +1174,10 @@ function eval_remote_async(
             ch = string(get(msg, :channel, ""))
             data = get(msg, :data, "")
 
+            # Any message counts as activity — keeps the hard timeout at bay
+            last_activity = time()
+
             if ch == "stdout" || ch == "stderr"
-                last_activity = time()
                 on_output !== nothing && on_output(ch, string(data))
             elseif ch == "breakpoint_hit"
                 # The eval triggered an @infiltrate breakpoint. Parse the
@@ -1228,13 +1230,14 @@ function eval_remote_async(
             end
         end
 
-        # Hard timeout safety valve
-        mins = round(Int, (time() - start_time) ÷ 60)
+        # Inactivity timeout — no messages received for too long
+        total_mins = round(Int, (time() - start_time) ÷ 60)
+        silent_mins = round(Int, (time() - last_activity) ÷ 60)
         return (
             stdout = "",
             stderr = "",
             value_repr = "",
-            exception = "Gate eval timed out after $(mins) minutes with no result. Unless you were anticipating that this would take considerable time, the session process may be stuck. You can use manage_repl to restart it.",
+            exception = "Gate eval timed out after $(total_mins) minutes (no activity for $(silent_mins)m). The session process may be stuck. You can use manage_repl to restart it.",
             backtrace = nothing,
         )
     catch e
