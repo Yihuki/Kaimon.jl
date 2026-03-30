@@ -1813,8 +1813,8 @@ function connected_sessions(mgr::ConnectionManager)
     end
 end
 
-"""First 8 chars of the session UUID — short, unique, token-efficient."""
-short_key(conn::REPLConnection) = first(conn.session_id, 8)
+"""Short unique session key — first 8 chars for UUIDs, full ID for TCP sessions."""
+short_key(conn::REPLConnection) = startswith(conn.session_id, "tcp-") ? conn.session_id : first(conn.session_id, 8)
 
 """Look up a connection by its 8-char short key. Returns nothing if not found.
 Includes stalled sessions so tools can still interact with them."""
