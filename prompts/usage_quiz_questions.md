@@ -66,9 +66,10 @@ b) If a long-running `ex()` call times out on the client side, how can you check
 
 a) What happens automatically when an `ex()` call takes longer than 30 seconds?
 b) How do you check on a promoted job's progress? What information is available?
-c) How can running code report intermediate values to the agent? Give an example.
-d) How does cooperative cancellation work? What must the running code do?
-e) What happens to background jobs if the Kaimon TUI is restarted?
+c) How often should you poll check_eval, and how does "last activity" help you decide?
+d) How can running code report intermediate values to the agent? Give an example.
+e) How does cooperative cancellation work? What must the running code do?
+f) What happens to background jobs if the Kaimon TUI is restarted?
 
 ---
 

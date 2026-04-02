@@ -114,9 +114,11 @@ b) Use `check_eval(eval_id="XXXXXXXX")` with the eval ID. It returns the current
 
 a) The eval is automatically **promoted to a background job**. The `ex` tool returns immediately with a job ID and instructions to use `check_eval` and `cancel_eval`. The computation continues running on the gate session. (3 pts)
 
-b) Call `check_eval(eval_id="XXXXXXXX")`. It returns: status (running/promoted/completed/failed/cancelled), elapsed time, code preview, the full result if completed, and any **stashed values** — intermediate data the running code has reported via `Gate.stash()`. (3 pts)
+b) Call `check_eval(eval_id="XXXXXXXX")`. It returns: status (running/completed/failed), elapsed time, last activity timestamp, stashed values, and the full result if completed. (2 pts)
 
-c) The running code calls `Gate.stash(key, value)` to report intermediate values. These are published via PUB/SUB and visible through `check_eval`. Example: (3 pts)
+c) **Wait at least 30 seconds** before the first check, then check every 60 seconds or longer. Do NOT poll rapidly — the job won't complete faster. The "last activity" field tells you how recently the job reported progress: if it says "last activity 3s ago" the job is active; if "last activity 120s ago" it may be stuck or in a long computation without stash calls. Use this to decide whether to wait longer or cancel. (3 pts)
+
+d) The running code calls `Gate.stash(key, value)` to report intermediate values. These are published via PUB/SUB and visible through `check_eval`. `Gate.progress(message)` reports status text. Both also echo to the user's terminal via stderr. Example: (3 pts)
 ```julia
 for epoch in 1:100
     loss = train_epoch!(model)
@@ -126,11 +128,11 @@ for epoch in 1:100
 end
 ```
 
-d) Call `cancel_eval(eval_id="...")` which sends a cancellation signal to the gate session. The running code must **cooperatively check** `Gate.is_cancelled()` in its loop and `break` when it returns `true`. Julia cannot force-interrupt threads. (3 pts)
+e) Call `cancel_eval(eval_id="...")` which sends a cancellation signal to the gate session. The running code must **cooperatively check** `Gate.is_cancelled()` in its loop and `break` when it returns `true`. Julia cannot force-interrupt threads. (2 pts)
 
-e) Background jobs are **persisted to SQLite**. On TUI restart, Kaimon checks the database for `running` jobs and queries the gate sessions for cached results. If the gate still has the result cached, it's retrieved and stored. Jobs older than 1 hour with no session are marked as `lost`. (3 pts)
+f) Background jobs are **persisted to SQLite**. On TUI restart, Kaimon checks the database for `running` jobs and queries the gate sessions for cached results. If the gate still has the result cached, it's retrieved and stored. Jobs older than 1 hour with no session are marked as `lost`. (2 pts)
 
-**Grading:** 3 points per sub-question
+**Grading:** 15 points total across sub-questions
 
 ---
 

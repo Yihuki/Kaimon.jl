@@ -2366,15 +2366,15 @@ end
 
 check_eval_tool = @mcp_tool(
     :check_eval,
-    """Check the status of a previous ex() evaluation by its eval ID.
+    """Check the status of a background job by eval ID.
 
-Returns whether the eval is still running, completed, or failed, along with
-elapsed time and a preview of the result if available. Use this when a previous
-ex() call timed out or you want to check on a long-running evaluation.
+IMPORTANT: Do NOT poll this rapidly. Wait at least 30 seconds between calls,
+or longer for computations you expect to take minutes. The job will not
+complete faster if you check more often — you are just wasting tokens.
+A good pattern: check once after 30s, then every 60s after that.
 
-The eval ID is delivered as a structured JSON field in two places:
-1. The first progress notification: {"eval_id": "XXXXXXXX"} in params
-2. The final result object: {"eval_id": "XXXXXXXX"} alongside content""",
+Returns status (running/completed/failed), elapsed time, stashed values,
+and the result if completed.""",
     Dict(
         "type" => "object",
         "properties" => Dict(
@@ -2423,8 +2423,13 @@ The eval ID is delivered as a structured JSON field in two places:
         display_status = record.status == :promoted ? :running : record.status
         code_preview = first(record.code, 80) * (length(record.code) > 80 ? "..." : "")
 
-        parts = ["$(record.eval_id) on $(record.session_key)",
-                 "$(display_status), $(_fmt_elapsed(elapsed))"]
+        status_line = "$(display_status), $(_fmt_elapsed(elapsed))"
+        # Show last activity age for running jobs
+        if display_status == :running && record.last_update > record.started_at
+            ago = round(Int, time() - record.last_update)
+            status_line *= ", last activity $(ago)s ago"
+        end
+        parts = ["$(record.eval_id) on $(record.session_key)", status_line]
 
         # Stash summary (compact: key=value pairs on one line)
         if !isempty(record.stash)

@@ -23,6 +23,7 @@ mutable struct EvalRecord
     code::String              # original code (truncated to 500 chars for storage)
     started_at::Float64       # time()
     finished_at::Float64      # 0.0 while running
+    last_update::Float64      # time() of last stash/progress/stdout activity
     status::Symbol            # :running, :completed, :failed, :timeout, :promoted
     result_preview::String    # first 500 chars of formatted result (empty while running)
     full_result::String       # complete formatted result (stored for promoted jobs)
@@ -339,6 +340,7 @@ function _record_eval_start!(mgr::ConnectionManager, eval_id::String, session_ke
         first(code, 500),
         time(),
         0.0,
+        time(),   # last_update
         :running,
         "",
         "",
@@ -1408,6 +1410,7 @@ function drain_stream_messages!(mgr::ConnectionManager)
                             for r in mgr.eval_history
                                 if r.eval_id == msg_request_id
                                     r.stash[skey] = sval
+                                    r.last_update = time()
                                     break
                                 end
                             end

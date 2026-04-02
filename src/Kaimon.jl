@@ -1574,6 +1574,7 @@ function execute_via_gate_streaming(
                "Session: $(isempty(conn.display_name) ? conn.name : conn.display_name)\n" *
                "Code: $(first(code, 80))$(length(code) > 80 ? "..." : "")\n\n" *
                "Use `check_eval(eval_id=\"$eval_id\")` to check status and retrieve the result.\n" *
+               "Wait at least 30s before checking. Do NOT poll rapidly.\n" *
                "Use `cancel_eval(eval_id=\"$eval_id\")` to cancel if needed."
     end
 
