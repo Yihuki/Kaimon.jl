@@ -120,9 +120,6 @@ function _build_extension_script(config::ExtensionConfig)
     e = config.entry
     # The subprocess is launched with --project=<extension path>, so the
     # extension package and its deps are available immediately.
-    # Kaimon is added to LOAD_PATH explicitly so it doesn't need to be
-    # in the user's global environment.
-    kaimon_dir = pkgdir(Kaimon)
     on_shutdown_kwarg = if !isempty(m.shutdown_function)
         ", on_shutdown=$(m.module_name).$(m.shutdown_function)"
     else
@@ -164,7 +161,7 @@ function _build_extension_script(config::ExtensionConfig)
     try
         using Revise
     catch; end
-    insert!(LOAD_PATH, 1, $(repr(kaimon_dir)))
+    try; import Pkg; Pkg.resolve(io=devnull); catch e; @warn "Pkg.resolve failed" exception=e; end
     using Kaimon
     # Auto-flushing logger so extension output is visible immediately in the log file
     using LoggingExtras, Logging, Dates
@@ -220,7 +217,9 @@ function spawn_extension!(ext::ManagedExtension)
         julia_bin = joinpath(Sys.BINDIR, "julia")
         project = ext.config.entry.project_path
         env = copy(ENV)
-        delete!(env, "JULIA_LOAD_PATH")
+        # Default LOAD_PATH: extension project (@), global env (@v#.#), stdlib
+        # Kaimon is installed in the global env, so @v#.# provides it.
+        env["JULIA_LOAD_PATH"] = "@:@v#.#:@stdlib"
         delete!(env, "JULIA_PROJECT")
         # Mark this process as Kaimon-spawned so we can identify orphans
         env["KAIMON_EXTENSION"] = ext.config.manifest.namespace
