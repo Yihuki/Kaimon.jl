@@ -1567,6 +1567,7 @@ function handle_message(request::NamedTuple)
                             delete!(_COMPLETED_RESULTS, first(keys(_COMPLETED_RESULTS)))
                         end
                     end
+                    _stderr_finish!()  # finalize any \r-overwritten progress/stash lines
                     _publish_stream("eval_complete", serialized; request_id)
                 catch pub_err
                     # Serialization of result failed — send a plain-text fallback
@@ -1663,6 +1664,7 @@ function handle_message(request::NamedTuple)
                 task_local_storage(:gate_progress, true)
 
                 result = _dispatch_tool_call(tool.handler, tool_args)
+                _stderr_finish!()
                 _publish_stream("tool_complete", string(result); request_id)
             catch e
                 _publish_stream(
@@ -2331,10 +2333,47 @@ streamed to the MCP client as an SSE progress notification.
 Only works when called from within a GateTool handler invoked via the async
 path. No-op otherwise.
 """
+# Track last stderr output length for \r overwrite
+const _STDERR_LAST_LEN = Ref{Int}(0)
+const _STDERR_LAST_KIND = Ref{Symbol}(:none)  # :progress, :stash, :none
+
+function _stderr_overwrite!(line::String, kind::Symbol)
+    # If same kind as last output, overwrite with \r; otherwise newline first
+    if _STDERR_LAST_KIND[] == kind && _STDERR_LAST_LEN[] > 0
+        print(stderr, "\r")
+        # Clear previous line if new one is shorter
+        if length(line) < _STDERR_LAST_LEN[]
+            print(stderr, " " ^ _STDERR_LAST_LEN[])
+            print(stderr, "\r")
+        end
+    elseif _STDERR_LAST_KIND[] != :none && _STDERR_LAST_LEN[] > 0
+        println(stderr)  # newline to preserve previous different-kind output
+    end
+    print(stderr, line)
+    flush(stderr)
+    _STDERR_LAST_LEN[] = length(line)
+    _STDERR_LAST_KIND[] = kind
+end
+
+"""Finish the current stderr overwrite line (newline + reset)."""
+function _stderr_finish!()
+    if _STDERR_LAST_LEN[] > 0
+        println(stderr)
+        _STDERR_LAST_LEN[] = 0
+        _STDERR_LAST_KIND[] = :none
+    end
+end
+
 function progress(message::String)
     rid = get(task_local_storage(), :gate_request_id, nothing)
     rid === nothing && return
     _publish_stream("tool_progress", message; request_id = string(rid))
+    try
+        ts = Dates.format(Dates.now(), "HH:MM:SS")
+        line = "[$ts] ⏳ $message"
+        _stderr_overwrite!(line, :progress)
+    catch
+    end
 end
 
 # ── Job Safehouse ─────────────────────────────────────────────────────────────
@@ -2438,6 +2477,17 @@ function stash(key::String, value; job_id::String="")
         _publish_stream("job_stash", "$key=$repr_v"; request_id = job_id)
     catch
     end
+    # Echo to stderr — uses \r overwrite so rapid stash calls stay on one line
+    try
+        short_v = sprint(show, value; context=:limit => true)
+        if length(short_v) > 40
+            short_v = first(short_v, 40) * "…"
+        end
+        ts = Dates.format(Dates.now(), "HH:MM:SS")
+        line = "[$ts] 📌 $key=$short_v"
+        _stderr_overwrite!(line, :stash)
+    catch
+    end
     nothing
 end
 
@@ -2452,8 +2502,16 @@ Gate.stash("epoch" => epoch, "loss" => loss, "accuracy" => acc)
 ```
 """
 function stash(pairs::Pair{String}...; job_id::String="")
+    if isempty(pairs)
+        return
+    end
+    # Batch: stash each value individually (publishes + safehouse)
     for (k, v) in pairs
-        stash(k, v; job_id)
+        if isempty(job_id)
+            stash(k, v)
+        else
+            stash(k, v; job_id)
+        end
     end
 end
 
