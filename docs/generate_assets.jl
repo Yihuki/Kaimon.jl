@@ -18,6 +18,13 @@ using JSON3
 using Dates
 using Random
 
+"""Create a KaimonModel and set the active tab (replaces removed `active_tab` kwarg)."""
+function _model(; tab::Int = 1, kwargs...)
+    m = KaimonModel(; kwargs...)
+    m.tab_bar.active = tab
+    return m
+end
+
 import Kaimon:
     KaimonModel,
     ConnectionManager,
@@ -384,21 +391,18 @@ function _build_sessions_model()
     )
 
     # Warm up the ECG trace a bit
-    ecg = fill(0.5, 240)
-
     mgr = ConnectionManager()
     push!(mgr.connections, conn1)
 
-    KaimonModel(
+    _model(
         _render_mode = true,
-        active_tab = 2,          # start on Sessions
+        tab = 2,                 # start on Sessions
         conn_mgr = mgr,
         server_running = true,
         server_started = true,
         total_tool_calls = 57,
         tool_results = results,
         selected_connection = 1,
-        ecg_trace = ecg,
     )
 end
 
@@ -423,9 +427,9 @@ const EVENTS_SESSIONS = EventScript(
 # ═══════════════════════════════════════════════════════════════════════
 
 function _build_config_model()
-    KaimonModel(
+    _model(
         _render_mode = true,
-        active_tab = 6,            # start on Config tab
+        tab = 6,                   # start on Config tab
         server_running = true,
         server_started = true,
         server_port = 2828,
@@ -467,9 +471,9 @@ const EVENTS_CONFIG = EventScript(
 # ═══════════════════════════════════════════════════════════════════════
 
 function _build_startup_global_model()
-    KaimonModel(
+    _model(
         _render_mode = true,
-        active_tab = 6,
+        tab = 6,
         server_running = true,
         server_started = true,
         server_port = 2828,
@@ -497,9 +501,9 @@ const EVENTS_STARTUP_GLOBAL = EventScript(
 # ═══════════════════════════════════════════════════════════════════════
 
 function _build_startup_project_model()
-    KaimonModel(
+    _model(
         _render_mode = true,
-        active_tab = 6,
+        tab = 6,
         server_running = true,
         server_started = true,
         server_port = 2828,
@@ -579,9 +583,9 @@ function _build_search_model()
         ),
     ]
 
-    KaimonModel(
+    _model(
         _render_mode = true,
-        active_tab = 4,   # Search tab
+        tab = 4,          # Search tab
         server_running = true,
         server_started = true,
         search_qdrant_up = true,
@@ -635,9 +639,9 @@ function _build_search_config_model()
         (name = "qwen3-embedding",               dims = 4096, ctx = 8192, installed = false),
         (name = "snowflake-arctic-embed:latest", dims = 1024, ctx = 512,  installed = false),
     ]
-    KaimonModel(
+    _model(
         _render_mode = true,
-        active_tab = 4,
+        tab = 4,
         server_running = true,
         server_started = true,
         search_qdrant_up = true,
@@ -701,9 +705,9 @@ function _build_activity_model()
                        tool_call_count=169)
     push!(mgr.connections, conn)
 
-    KaimonModel(
+    _model(
         _render_mode = true,
-        active_tab = 3,
+        tab = 3,
         conn_mgr = mgr,
         server_running = true,
         server_started = true,
@@ -791,9 +795,9 @@ function _build_tests_model()
         "  16 passed, 2 failed in 2.1s",
     ]
 
-    KaimonModel(
+    _model(
         _render_mode = true,
-        active_tab = 5,
+        tab = 5,
         server_running = true,
         server_started = true,
         test_runs = [run1, run2],
@@ -847,9 +851,9 @@ function _build_collection_manager_model()
         ),
     ]
 
-    KaimonModel(
+    _model(
         _render_mode = true,
-        active_tab = 4,
+        tab = 4,
         server_running = true,
         server_started = true,
         search_qdrant_up = true,
@@ -908,9 +912,9 @@ function _build_debug_model()
         (source = :user,  code = "eigvals(A)",         result = "[4.123, 4.891, 5.734, 7.252]"),
     ]
 
-    KaimonModel(
+    _model(
         _render_mode = true,
-        active_tab = 7,
+        tab = 7,
         conn_mgr = mgr,
         server_running = true,
         server_started = true,
