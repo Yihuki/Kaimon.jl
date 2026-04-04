@@ -1519,6 +1519,11 @@ function _exec_restart(name::String, session_id::String, project_path::String)
     catch
     end
 
+    # Clear the terminal so the restarted session starts with a clean screen.
+    # prepare_for_exec!() has already restored the TTY to cooked mode.
+    print(stdout, "\e[H\e[2J")
+    flush(stdout)
+
     # execvp replaces the process image — same PID, same terminal
     argv = map(String, args)
     ptrs = Ptr{UInt8}[pointer(s) for s in argv]
