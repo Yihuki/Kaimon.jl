@@ -2,16 +2,10 @@
 
 ## 1. Launch Kaimon
 
-If you installed via `]app add` (see [Installation](installation.md)), run:
+After installing via `]app add` (see [Installation](installation.md)), run:
 
 ```bash
 kaimon
-```
-
-Or, if you cloned the repo:
-
-```bash
-./bin/kaimon
 ```
 
 On the first run, Kaimon installs dependencies, precompiles, then launches the

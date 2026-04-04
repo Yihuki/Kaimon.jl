@@ -6,7 +6,7 @@
 
 ## Install Kaimon
 
-### Option A: Julia App (Recommended)
+### Julia App (Recommended)
 
 Use Julia's package app system to install the `kaimon` command globally:
 
@@ -19,18 +19,6 @@ This installs a `kaimon` script to `~/.julia/bin/`. Make sure `~/.julia/bin` is 
 ```bash
 kaimon
 ```
-
-### Option B: Clone and Run
-
-Clone the repository and use the launcher script directly:
-
-```bash
-git clone https://github.com/kahliburke/Kaimon.jl
-cd Kaimon.jl
-./bin/kaimon
-```
-
-`bin/kaimon` activates the project, installs dependencies on first run, and launches the terminal dashboard.
 
 ### As a Library
 
@@ -68,14 +56,13 @@ This enables AI agents to execute VS Code commands and navigate to specific file
 
 ## Verify Installation
 
-Start the server to confirm everything is working:
+Run `kaimon` from any terminal:
 
-```julia
-using Kaimon
-Kaimon.start!()
+```bash
+kaimon
 ```
 
-This launches the MCP server on stdio and opens the terminal dashboard. You should see the TUI appear with session and tool call panels. Press `q` to exit the dashboard (the server continues running in the background).
+On first launch, a setup wizard will guide you through security configuration and MCP client setup. You should see the TUI dashboard appear with session, activity, and configuration panels.
 
 ## Next Steps
 
