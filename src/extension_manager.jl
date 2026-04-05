@@ -217,9 +217,11 @@ function spawn_extension!(ext::ManagedExtension)
         julia_bin = joinpath(Sys.BINDIR, "julia")
         project = ext.config.entry.project_path
         env = copy(ENV)
-        # Default LOAD_PATH: extension project (@), global env (@v#.#), stdlib
-        # Kaimon is installed in the global env, so @v#.# provides it.
-        env["JULIA_LOAD_PATH"] = "@:@v#.#:@stdlib"
+        # LOAD_PATH: extension project (@), Kaimon project (for Gate, LoggingExtras, etc.),
+        # global env (@v#.#), stdlib.  Adding Kaimon's project path ensures extensions can
+        # always find Kaimon and its deps without requiring them in their own Project.toml.
+        kaimon_project = pkgdir(@__MODULE__)
+        env["JULIA_LOAD_PATH"] = "@:$(kaimon_project):@v#.#:@stdlib"
         delete!(env, "JULIA_PROJECT")
         # Mark this process as Kaimon-spawned so we can identify orphans
         env["KAIMON_EXTENSION"] = ext.config.manifest.namespace

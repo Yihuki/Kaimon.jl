@@ -1827,8 +1827,8 @@ function start_mcp_server(
             end
 
             # Handle GET requests on MCP endpoint — open SSE stream per 2025-11-25 spec.
-            # Kaimon has no server-initiated messages, so we open the stream and hold it
-            # open with periodic keepalive comments until the client disconnects.
+            # This stream delivers server-initiated notifications (e.g. tools/list_changed
+            # when extensions register new tools) and keepalive comments.
             if req.method == "GET" && (
                 req.target == "/mcp" ||
                 req.target == "/" ||
@@ -1839,11 +1839,20 @@ function start_mcp_server(
                 HTTP.setheader(http, "Cache-Control" => "no-cache")
                 HTTP.setheader(http, "Connection" => "keep-alive")
                 HTTP.startwrite(http)
-                # Send keepalive comments every 15 s until the client closes.
                 try
                     while isopen(http)
-                        write(http, ": keepalive\n\n")
-                        sleep(15)
+                        # Flush any pending notifications (tools/list_changed, etc.)
+                        seen = Set{String}()
+                        while isready(_PENDING_NOTIFICATIONS)
+                            notif = try; take!(_PENDING_NOTIFICATIONS); catch; break; end
+                            method = get(notif, "method", "")
+                            method in seen && continue
+                            push!(seen, method)
+                            notif_json = JSON.json(notif)
+                            write(http, "data: $(notif_json)\n\n")
+                        end
+                        flush(http)
+                        sleep(1)
                     end
                 catch
                 end
@@ -1976,12 +1985,37 @@ function start_mcp_server(
             handler = create_handler(tools_dict, name_to_id, port, security_config, session)
             response = handler(req_with_body)
 
-            HTTP.setstatus(http, response.status)
-            for (name, value) in response.headers
-                HTTP.setheader(http, name => value)
+            # Check for pending notifications (e.g. tools/list_changed from extensions).
+            # If any are queued, upgrade this response to SSE so we can send both
+            # the notifications and the JSON-RPC result as separate events.
+            has_notifications = isready(_PENDING_NOTIFICATIONS)
+
+            if has_notifications
+                HTTP.setstatus(http, 200)
+                HTTP.setheader(http, "Content-Type" => "text/event-stream")
+                HTTP.setheader(http, "Cache-Control" => "no-cache")
+                HTTP.setheader(http, "Mcp-Session-Id" => session !== nothing ? session.id : "")
+                HTTP.startwrite(http)
+                # Flush notifications
+                seen = Set{String}()
+                while isready(_PENDING_NOTIFICATIONS)
+                    notif = try; take!(_PENDING_NOTIFICATIONS); catch; break; end
+                    method = get(notif, "method", "")
+                    method in seen && continue
+                    push!(seen, method)
+                    write(http, "data: $(JSON.json(notif))\n\n")
+                end
+                # Send the actual response as the final event
+                write(http, "data: $(String(response.body))\n\n")
+                flush(http)
+            else
+                HTTP.setstatus(http, response.status)
+                for (name, value) in response.headers
+                    HTTP.setheader(http, name => value)
+                end
+                HTTP.startwrite(http)
+                write(http, response.body)
             end
-            HTTP.startwrite(http)
-            write(http, response.body)
             return nothing
 
         catch e
