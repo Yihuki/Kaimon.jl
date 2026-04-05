@@ -1,0 +1,5 @@
+[extension]
+namespace = "hello"
+module = "HelloExtension"
+tools_function = "create_tools"
+description = "Example extension — greeting and utility tools."
