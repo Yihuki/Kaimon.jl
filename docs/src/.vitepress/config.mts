@@ -40,7 +40,7 @@ export default withMermaid(defineConfig({
   description: 'Opening the gate between AI and Julia',
   lastUpdated: true,
   cleanUrls: true,
-  head: [['link', { rel: 'icon', href: BASE + 'assets/kaimon_logo1.png' }]],
+  head: [['link', { rel: 'icon', href: ASSET_BASE + 'kaimon_logo1.png' }]],
 
   vite: {
     define: {
@@ -71,7 +71,7 @@ export default withMermaid(defineConfig({
   mermaid: {},
 
   themeConfig: {
-    logo: BASE + 'assets/kaimon_logo1.png',
+    logo: ASSET_BASE + 'kaimon_logo1.png',
     nav: [
       { text: 'Guide', link: '/getting-started' },
       { text: 'Tools', link: '/tools' },
