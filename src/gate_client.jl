@@ -268,6 +268,36 @@ function ConnectionManager(; sock_dir::String = joinpath(kaimon_cache_dir(), "so
     )
 end
 
+# ── Panel Push Buffer ────────────────────────────────────────────────────────
+# Accumulates push_panel() messages from gate sessions so the TUI ext_panel
+# can read them on the next frame without polling.
+
+const _PANEL_PUSH_BUFFER = Dict{String, Dict{String, Any}}()  # session_key -> key -> value
+const _PANEL_PUSH_LOCK = ReentrantLock()
+
+function _buffer_panel_push!(session_key::String, key::String, value)
+    lock(_PANEL_PUSH_LOCK) do
+        buf = get!(() -> Dict{String, Any}(), _PANEL_PUSH_BUFFER, session_key)
+        buf[key] = value
+    end
+end
+
+"""
+    drain_panel_pushes!(session_key::String) -> Dict{String, Any}
+
+Drain all pending panel push messages for a session. Returns empty Dict if none.
+Called by ext_panel update loop on the TUI thread.
+"""
+function drain_panel_pushes!(session_key::String)
+    lock(_PANEL_PUSH_LOCK) do
+        buf = get(_PANEL_PUSH_BUFFER, session_key, nothing)
+        buf === nothing && return Dict{String, Any}()
+        result = copy(buf)
+        empty!(buf)
+        return result
+    end
+end
+
 # ── Global Event PUB ─────────────────────────────────────────────────────────
 # Re-broadcasts gate stream events on a single PUB socket so extensions can
 # SUB to one well-known endpoint with topic filtering.
@@ -1366,6 +1396,16 @@ function drain_stream_messages!(mgr::ConnectionManager)
                     continue
                 end
                 ch = string(get(msg, :channel, "stdout"))
+
+                # Panel push: buffer raw data (before stringification) and skip
+                if ch == "panel_push"
+                    raw_data = get(msg, :data, nothing)
+                    if raw_data isa NamedTuple && hasfield(typeof(raw_data), :key)
+                        _buffer_panel_push!(short_key(conn), string(raw_data.key), raw_data.value)
+                    end
+                    continue
+                end
+
                 data = string(get(msg, :data, ""))
                 msg_request_id = string(get(msg, :request_id, ""))
 

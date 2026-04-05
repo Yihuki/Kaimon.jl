@@ -25,6 +25,7 @@ function create_tools(GateTool::Type)
             "Hello, $(name)."
         end
         push!(GREETINGS, msg)
+        Main.Kaimon.Gate.push_panel("greetings", copy(GREETINGS))
         return msg
     end
 
@@ -37,6 +38,7 @@ function create_tools(GateTool::Type)
         result = rand(1:sides)
         msg = "🎲 Rolled a $result (d$sides)"
         push!(ROLLS, msg)
+        Main.Kaimon.Gate.push_panel("rolls", copy(ROLLS))
         return msg
     end
 

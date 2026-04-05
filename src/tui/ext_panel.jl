@@ -34,17 +34,27 @@ mutable struct ExtPanelContext
     project_path::String             # extension project root
     tick::Int                        # frame counter (synced from KaimonModel)
     _cache::Dict{Symbol,Any}         # scratch space for the panel
+    # Closures for cross-process communication — panels can't reference Kaimon
+    # directly since they run in anonymous modules.
+    eval::Function                   # (code::String) -> NamedTuple
+    request::Function                # (tool_name::String, args::Dict) -> String
 end
 
 function ExtPanelContext(ext::ManagedExtension, conn_mgr)
-    ExtPanelContext(
+    ctx = ExtPanelContext(
         ext.session_key,
         conn_mgr,
         ext.config.manifest.namespace,
         ext.config.entry.project_path,
         0,
         Dict{Symbol,Any}(),
+        identity,  # placeholder
+        identity,  # placeholder
     )
+    # Close over ctx so the panel just calls ctx.eval("code")
+    ctx.eval = code -> ext_panel_eval(ctx, code)
+    ctx.request = (tool, args=Dict{String,Any}()) -> ext_panel_request(ctx, tool, args)
+    return ctx
 end
 
 """
@@ -171,6 +181,13 @@ function _ext_panel_update!(panel::ActiveExtPanel, tick::Int)
     panel.loading && return
     isempty(panel.error_msg) || return
     panel.ctx.tick = tick
+
+    # Drain any push_panel() messages into ctx._cache[:panel_state]
+    pushes = drain_panel_pushes!(panel.ctx.session_key)
+    if !isempty(pushes)
+        ps = get!(panel.ctx._cache, :panel_state, Dict{String,Any}())::Dict{String,Any}
+        merge!(ps, pushes)
+    end
 
     if isdefined(panel.ext_mod, :update!)
         try

@@ -2003,10 +2003,13 @@ function start_mcp_server(
                     method = get(notif, "method", "")
                     method in seen && continue
                     push!(seen, method)
-                    write(http, "data: $(JSON.json(notif))\n\n")
+                    notif_json = JSON.json(notif)
+                    _push_log!(:info, "SSE notification flush: $method")
+                    write(http, "event: message\ndata: $(notif_json)\n\n")
                 end
                 # Send the actual response as the final event
-                write(http, "data: $(String(response.body))\n\n")
+                response_json = String(response.body)
+                write(http, "event: message\ndata: $(response_json)\n\n")
                 flush(http)
             else
                 HTTP.setstatus(http, response.status)

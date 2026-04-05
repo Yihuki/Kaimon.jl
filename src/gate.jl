@@ -2562,6 +2562,46 @@ function stash(pairs::Pair{String}...; job_id::String="")
 end
 
 """
+    push_panel(key::String, value)
+
+Push a state update to the extension's TUI panel. The value is delivered
+via PUB/SUB and appears in the panel's `ctx._cache[:panel_state][key]`
+on the next frame.
+
+Use this from tool handlers or background tasks to stream data to the
+panel without the panel needing to poll via `ctx.eval()`.
+
+# Example
+```julia
+function my_tool_handler(args)
+    result = do_work(args)
+    Gate.push_panel("result", result)
+    Gate.push_panel("status", "done")
+    return "OK"
+end
+```
+"""
+function push_panel(key::String, value)
+    _publish_stream("panel_push", (key = key, value = value))
+end
+
+"""
+    push_panel(pairs::Pair{String}...)
+
+Push multiple panel state updates at once.
+
+# Example
+```julia
+Gate.push_panel("greetings" => greetings, "rolls" => rolls)
+```
+"""
+function push_panel(pairs::Pair{String}...)
+    for (k, v) in pairs
+        push_panel(k, v)
+    end
+end
+
+"""
     get_stash(job_id::String) -> Dict{String, Any}
 
 Retrieve all stashed values for a job. Returns empty Dict if none.
