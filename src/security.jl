@@ -218,6 +218,54 @@ function save_global_config(config::SecurityConfig)
 end
 
 """
+    _get_global_install_dismissed() -> Bool
+
+Read the `global_install_dismissed` flag from the config file. Stored as
+an extra key (not part of the KaimonConfig struct) so users can dismiss
+the "add Kaimon to global env" prompt permanently.
+"""
+function _get_global_install_dismissed()
+    config_path = get_global_config_path()
+    isfile(config_path) || return false
+    try
+        data = JSON.parse(read(config_path, String); dicttype = Dict{String,Any})
+        return Bool(get(data, "global_install_dismissed", false))
+    catch
+        return false
+    end
+end
+
+"""
+    _set_global_install_dismissed(dismissed::Bool) -> Bool
+
+Persist the `global_install_dismissed` flag in the config file. Preserves
+all other keys.
+"""
+function _set_global_install_dismissed(dismissed::Bool)
+    config_path = get_global_config_path()
+    config_dir = dirname(config_path)
+    isdir(config_dir) || mkpath(config_dir)
+    existing = if isfile(config_path)
+        try
+            JSON.parse(read(config_path, String); dicttype = Dict{String,Any})
+        catch
+            Dict{String,Any}()
+        end
+    else
+        Dict{String,Any}()
+    end
+    existing["global_install_dismissed"] = dismissed
+    try
+        write(config_path, JSON.json(existing, 2))
+        Sys.iswindows() || chmod(config_path, 0o600)
+        return true
+    catch e
+        @warn "Failed to save dismissal preference" exception = e
+        return false
+    end
+end
+
+"""
     validate_api_key(key::String, config::SecurityConfig) -> Bool
 
 Validate an API key against the security configuration.

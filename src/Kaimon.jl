@@ -2480,6 +2480,10 @@ function (@main)(ARGS)
             use_revise = true
         elseif arg == "--headless"
             headless = true
+        elseif arg == "--reset-global-prompt"
+            _set_global_install_dismissed(false)
+            println("Reset: Kaimon will ask about global installation on next start.")
+            return
         elseif arg in ("--help", "-h")
             println("""
             Kaimon — persistent MCP server with terminal dashboard
@@ -2487,11 +2491,12 @@ function (@main)(ARGS)
             Usage: kaimon [options]
 
             Options:
-              -p, --port PORT    MCP HTTP server port (default: 2828)
-              -t, --theme NAME   Theme: kokaku, esper, motoko, neuromancer (default: kokaku)
-              -r, --revise       Load Revise for live code reloading
-              --headless         Run without TUI (headless MCP server)
-              -h, --help         Show this help""")
+              -p, --port PORT             MCP HTTP server port (default: 2828)
+              -t, --theme NAME            Theme: kokaku, esper, motoko, neuromancer (default: kokaku)
+              -r, --revise                Load Revise for live code reloading
+              --headless                  Run without TUI (headless MCP server)
+              --reset-global-prompt       Re-enable the "add to global env" prompt
+              -h, --help                  Show this help""")
             return
         else
             println("Unknown argument: $arg")
@@ -2535,7 +2540,11 @@ function (@main)(ARGS)
         start!(; port = port)
         Base.JLOptions().isinteractive == 0 && wait(Condition())
     else
-        # Check that Kaimon is in the global Julia environment
+        # Check that Kaimon is in the global Julia environment.
+        # Only prompt if (a) it's not installed and (b) the user hasn't
+        # previously declined. The decline is persisted in config.json
+        # under the `global_install_dismissed` key. Users with workspace
+        # setups or tools like ShareAdd.jl can dismiss this once.
         if isa(stdin, Base.TTY)
             global_env = joinpath(homedir(), ".julia", "environments",
                                   "v$(VERSION.major).$(VERSION.minor)")
@@ -2543,19 +2552,26 @@ function (@main)(ARGS)
             in_global = isfile(global_proj) &&
                 haskey(get(Pkg.TOML.parsefile(global_proj), "deps", Dict()), "Kaimon")
 
-            if !in_global
+            dismissed = _get_global_install_dismissed()
+
+            if !in_global && !dismissed
                 println("""
 
                 Kaimon is not installed in your global Julia environment.
 
                 Gate.serve() must be called from your project REPLs to connect them
                 to the Kaimon dashboard. For this to work, Kaimon needs to be
-                available in every Julia session — the global environment is the
-                recommended place to install it.
+                available in every Julia session — the global environment is one
+                way to make it available everywhere.
+
+                Alternatives if you prefer to keep your global env minimal:
+                  - Use Julia 1.12+ workspaces to share Kaimon across projects
+                  - Use ShareAdd.jl to add Kaimon on-demand: `@usingany Kaimon`
+                  - Add Kaimon as a dep to each project that needs the gate
                 """)
-                print("Add Kaimon to your global Julia environment now? [Y/n]: ")
-                response = strip(readline())
-                if isempty(response) || lowercase(response) in ("y", "yes")
+                print("Add Kaimon to your global Julia environment now? [Y/n/never]: ")
+                response = lowercase(strip(readline()))
+                if isempty(response) || response in ("y", "yes")
                     @info "Installing Kaimon in global environment..."
                     try
                         kaimon_dir = dirname(@__DIR__)
@@ -2570,6 +2586,9 @@ function (@main)(ARGS)
                     catch e
                         @warn "Global install failed" exception = e
                     end
+                elseif response in ("never", "n", "no")
+                    _set_global_install_dismissed(true)
+                    println("\nGot it — won't ask again. Run `kaimon --reset-global-prompt` if you change your mind.\n")
                 else
                     println()
                 end
