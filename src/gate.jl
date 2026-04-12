@@ -1560,9 +1560,12 @@ function handle_message(request::NamedTuple)
         code = get(request, :code, "")
         display_code = get(request, :display_code, code)
         request_id = get(request, :request_id, "")
-        # Run eval on a default-pool thread so the interactive message loop
-        # stays responsive to pings during CPU-intensive evals.
-        Threads.@spawn begin
+        main_thread = get(request, :main_thread, false)
+        # Run eval on a spawned thread so the interactive message loop stays
+        # responsive to pings during CPU-intensive evals.
+        # When main_thread=true, spawn on :interactive so gate_eval routes
+        # through REPL.call_on_backend (thread 1) — required for GLMakie/GLFW.
+        function _do_async_eval()
             try
                 task_local_storage(:gate_request_id, request_id)
                 result = gate_eval(code; display_code = display_code)
@@ -1600,6 +1603,11 @@ function handle_message(request::NamedTuple)
                 )
                 _publish_stream("eval_error", _serialize_result(error_result); request_id)
             end
+        end
+        if main_thread
+            Threads.@spawn :interactive _do_async_eval()
+        else
+            Threads.@spawn _do_async_eval()
         end
         return (type = :accepted, request_id = request_id)
     elseif msg_type == :set_option

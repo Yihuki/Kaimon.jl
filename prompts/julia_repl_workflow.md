@@ -37,6 +37,7 @@ ex(e="(length(data), typeof(data))", q=false)
 1. **Default to `q=true`** — Saves tokens by suppressing return values
 2. **Use `q=false`** ONLY when YOU need the return value for a decision
 3. **`s=true`** (rare) — Suppresses agent> prompt and REPL echo for large outputs
+4. **`mt=true`** — Main-thread mode: routes eval through the REPL backend (thread 1). **Required** for GLMakie, GLFW, and any GPU/OpenGL code. Use for `using GLMakie`, plot creation, and `display(fig)`.
 
 **When to use `q=false`:**
 ```julia

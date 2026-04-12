@@ -92,7 +92,9 @@ c) `type_info("DataFrame")` — Shows fields, hierarchy, and type parameters. Be
 
 d) `qdrant_search_code(query="WebSocket connection handling")` — Semantic search finds relevant code by meaning. (~3 pts)
 
-**Grading:** ~4 points each, partial credit for reasonable alternatives with explanation
+e) `ex(e="using GLMakie; scatter([1,2,3], [4,5,6])", mt=true)` — `mt=true` is **critical**. GLMakie/GLFW requires thread 1 for all OpenGL calls. Without `mt=true`, async evals run on default-pool threads, causing `ThreadAssertionError`. (~3 pts)
+
+**Grading:** ~3-4 points each, partial credit for reasonable alternatives with explanation
 
 ---
 

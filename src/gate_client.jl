@@ -1053,6 +1053,7 @@ function eval_remote_async(
     display_code::String = code,
     on_output::Union{Function,Nothing} = nothing,
     request_id::String = "",  # caller-supplied ID (used for eval tracking)
+    main_thread::Bool = false,  # route through REPL backend (thread 1) for GLMakie/GLFW
 )
     if conn.status ∉ (:connected, :evaluating) || conn.req_socket === nothing
         return (
@@ -1085,6 +1086,7 @@ function eval_remote_async(
         code = code,
         display_code = display_code,
         request_id = request_id,
+        main_thread = main_thread,
     )
     result = _req_send_recv(conn, request; caller_timeout = 10.0)
 

@@ -52,6 +52,7 @@ a) You want to see all methods of `push!`
 b) You want to run the project's test suite and see pass/fail summary
 c) You want to check what fields a `DataFrame` has
 d) You want to find code that handles WebSocket connections
+e) You need to run `using GLMakie; scatter([1,2,3], [4,5,6])` — what `ex` parameter is critical and why?
 
 ---
 

@@ -1470,12 +1470,14 @@ function _handle_gate_tool_sse(
             silent = get(args, "s", false)
             max_output = min(get(args, "max_output", 6000), 25000)
             ses = get(args, "ses", "")
+            main_thread = get(args, "mt", false)
             execute_via_gate_streaming(
                 code;
                 quiet = quiet,
                 silent = silent,
                 max_output = max_output,
                 session = ses,
+                main_thread = main_thread,
                 on_progress = send_progress,
             )
         else

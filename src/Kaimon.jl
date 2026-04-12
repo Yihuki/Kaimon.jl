@@ -1407,6 +1407,7 @@ function execute_via_gate_streaming(
     silent::Bool = false,
     max_output::Int = 6000,
     session::String = "",
+    main_thread::Bool = false,
     on_progress::Union{Function,Nothing} = nothing,
 )
     conn, err = _resolve_gate_conn(session)
@@ -1464,6 +1465,7 @@ function execute_via_gate_streaming(
             display_code = code,
             on_output = on_output,
             request_id = eval_id,
+            main_thread = main_thread,
         )
         try; put!(result_channel, response); catch; end
     end

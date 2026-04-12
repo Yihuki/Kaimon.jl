@@ -404,7 +404,8 @@ repl_tool = @mcp_tool(
 
 Default q=true: suppresses return values (token-efficient). Use q=false only when you need the result.
 println/print to stdout are stripped from agent code. Use q=false with a final expression to see values.
-s=true (rare): suppresses agent> prompt and REPL echo for large outputs.""",
+s=true (rare): suppresses agent> prompt and REPL echo for large outputs.
+mt=true: routes eval through the REPL backend (thread 1). ALWAYS use mt=true for GLMakie, GLFW, or any GPU/OpenGL code — including `using GLMakie`, `display(fig)`, and plot creation. Without it, these will fail with ThreadAssertionError.""",
     Dict(
         "type" => "object",
         "properties" => Dict(
@@ -429,6 +430,10 @@ s=true (rare): suppresses agent> prompt and REPL echo for large outputs.""",
                 "type" => "string",
                 "description" => "Session key (8-char ID from resources/list). Required when multiple sessions are connected.",
             ),
+            "mt" => Dict(
+                "type" => "boolean",
+                "description" => "Main-thread mode: routes eval through the REPL backend (thread 1). Required for GLMakie/GLFW and other libraries that need the main thread. Default: false.",
+            ),
         ),
         "required" => ["e"],
     ),
@@ -439,6 +444,7 @@ s=true (rare): suppresses agent> prompt and REPL echo for large outputs.""",
             expr_str = get(args, "e", "")
             max_output = get(args, "max_output", 6000)
             ses = get(args, "ses", "")
+            main_thread = get(args, "mt", false)
 
             # Enforce hard limit
             max_output = min(max_output, 25000)
@@ -466,6 +472,7 @@ s=true (rare): suppresses agent> prompt and REPL echo for large outputs.""",
                     silent = silent,
                     max_output = max_output,
                     session = ses,
+                    main_thread = main_thread,
                     on_progress = on_progress,
                 )
             else
