@@ -1,6 +1,6 @@
 # Usage
 
-Kaimon's terminal UI has seven tabs, each accessible by pressing its number key. This page walks through each tab.
+Kaimon's terminal UI has nine tabs, each accessible by pressing its number key. This page walks through each tab.
 
 ![Kaimon dashboard](./assets/kaimon_overview.gif)
 
@@ -12,8 +12,9 @@ Kaimon's terminal UI has seven tabs, each accessible by pressing its number key.
 | `4` | Search | Semantic code search |
 | `5` | Tests | Run and browse test results |
 | `6` | Config | MCP client setup and onboarding |
-| `7` | Advanced | Stress testing and diagnostics |
-| `9` | Extensions | Extension management |
+| `7` | Debug | Interactive breakpoint debugging (Infiltrator) |
+| `8` | Extensions | Extension management |
+| `9` | Advanced | Stress testing and diagnostics |
 
 Press `q` to quit, `?` to show a key reference overlay.
 

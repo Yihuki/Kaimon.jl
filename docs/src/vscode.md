@@ -15,7 +15,7 @@ Reload VS Code after installation. The extension comes with sensible default all
 
 ### Allowed Commands
 
-VS Code commands must be explicitly allowlisted before they can be executed via MCP. The extension ships with common defaults (file save, terminal control). To customize, edit your VS Code settings (user or workspace):
+VS Code commands must be explicitly allowlisted before they can be executed via MCP. The extension ships with common defaults (file save, terminal control, navigation). To customize, open VS Code settings (`Cmd+,` / `Ctrl+,`) and search for `vscode-remote-control.allowedCommands`, or edit your settings JSON directly (user or workspace):
 
 ```json
 {
@@ -26,6 +26,8 @@ VS Code commands must be explicitly allowlisted before they can be executed via 
   ]
 }
 ```
+
+Workspace settings (`.vscode/settings.json`) override user settings. Use `list_vscode_commands` from an MCP client to see the currently active list.
 
 Use [`list_vscode_commands`](@ref) to see which commands are currently allowed.
 

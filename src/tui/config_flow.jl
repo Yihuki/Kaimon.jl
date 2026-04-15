@@ -897,7 +897,7 @@ function _install_vscode_remote_control!(m::KaimonModel)
             "vscode.open",
         ])
         m.config_flow = FLOW_CLIENT_RESULT
-        m.flow_message = "VSCode Remote Control installed.\nReload VSCode to activate."
+        m.flow_message = "VSCode Remote Control installed.\nReload VSCode to activate.\n\nAllowed commands are configured in\nVS Code settings under\nvscode-remote-control.allowedCommands"
         m.flow_success = true
     catch e
         m.config_flow = FLOW_CLIENT_RESULT

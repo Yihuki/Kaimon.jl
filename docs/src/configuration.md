@@ -58,13 +58,7 @@ The security config controls access to the MCP server via `config.json` at `~/.c
 ```json
 {
   "mode": "strict",
-  "api_keys": [
-    {
-      "key": "km_abc123...",
-      "name": "my-editor",
-      "created": "2025-01-15T10:30:00Z"
-    }
-  ],
+  "api_keys": ["km_abc123..."],
   "allowed_ips": ["127.0.0.1", "::1"]
 }
 ```
