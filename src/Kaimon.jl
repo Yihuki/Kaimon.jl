@@ -2470,7 +2470,7 @@ function (@main)(ARGS)
     cmd = `$julia --startup-file=no --project=$kaimon_dir -e "using Pkg; Pkg.resolve(io=devnull); Pkg.instantiate(io=devnull)"`
     run(pipeline(cmd; stdout=devnull, stderr=devnull); wait=false)
 
-    port = 2828
+    cli_port = nothing
     theme = nothing
     headless = false
     use_revise = false
@@ -2480,7 +2480,7 @@ function (@main)(ARGS)
         arg = ARGS[i]
         if arg in ("--port", "-p") && i < length(ARGS)
             i += 1
-            port = parse(Int, ARGS[i])
+            cli_port = parse(Int, ARGS[i])
         elseif arg in ("--theme", "-t") && i < length(ARGS)
             i += 1
             theme = Symbol(ARGS[i])
@@ -2511,6 +2511,14 @@ function (@main)(ARGS)
             return
         end
         i += 1
+    end
+
+    # Resolve port: CLI arg > config.json > default 2828
+    port = if cli_port !== nothing
+        cli_port
+    else
+        cfg = try; load_global_config(); catch; nothing; end
+        (cfg !== nothing && cfg.port != 0) ? cfg.port : 2828
     end
 
     # Load Revise if requested — as a weak dep it may not be in the app's
